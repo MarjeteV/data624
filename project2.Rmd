@@ -1,0 +1,31 @@
+---
+title: "Project 2"
+author: "Group - MV, HF, MT, LM, kim"
+date: "2024-11-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r }
+test <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+train <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/training%20data.csv")
+```
+
+
+
+```{r}
+missing_train <- colSums(is.na(train)) 
+missing_train[missing_train > 0]  
+
+```
+```{r}
+missing_test <- colSums(is.na(test))
+missing_test[missing_test > 0]
+
+```
+
