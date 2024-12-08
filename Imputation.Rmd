@@ -1,0 +1,112 @@
+---
+title: "Project 2"
+author: "Group - MV, HF, MT, LM, kim"
+date: "2024-11-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(doParallel)
+library(mice)
+library(VIM)
+library(e1071)
+library(randomForest)
+library(foreach)
+library(import)
+set.seed(8675309)
+```
+
+```{r make parallel}
+stopCluster(cl)
+no_cores <- detectCores() - 1  
+cl <- makeCluster(no_cores)  
+registerDoParallel(cl)
+```
+
+```{r }
+test <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+train <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/training%20data.csv")
+```
+
+```{r counts of missing data}
+tidy_train <- train |> 
+  as_tibble()
+
+tidy_train |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(cols = everything(), names_to = "Column", values_to = "Missing Entries") |>
+  arrange(desc(`Missing Entries`))
+
+tidy_train |>
+  summarise(n = n())
+```
+
+```{r demonstrate brand values}
+tidy_train |>
+  count(Brand.Code)
+```
+
+Can keep nzv variables for tree based models
+```{r check for nzv}
+tidy_train |>
+  nearZeroVar(saveMetrics = TRUE) |>
+  filter(zeroVar == TRUE | nzv == TRUE)
+```
+
+Obvious but merits recording, Brand.Code is only non-numeric and can be converted to a factor. There are three columns that are integers instead of numeric, Filler.Speed, Hyd.Pressure4, Bowl.Setpoint, and Carb.Flow which we should probably round the imputed values for
+```{r classes of columns}
+sapply(tidy_train, class)
+```
+
+```{r check for patterns in missing data}
+aggr_plot <- aggr(tidy_train, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(data), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+```
+
+We should drop missing Brand.Code and missing PH rows. Brand.Code is categorical making imputation risky and PH is the dependent variable, predicting it now would unduly influence models. Removing these rows takes total data from 2571 -> 2447 rows which is slightly more than 95% of the original.
+
+```{r impute training values}
+# Turn integer columns into numerics to prevent errors
+tidy_train %<>% mutate(across(
+  .cols = c('Filler.Speed', 'Hyd.Pressure4', 'Bowl.Setpoint', 'Carb.Flow'),
+  .fns = as.numeric
+  ))
+
+# Dropping rows with missing Brand.Code or PH
+drop_missing_cat <- tidy_train |>
+  filter(Brand.Code != "" & !is.na(PH))
+
+# Create a one hot encoding tibble
+dummies <- dummyVars( ~ Brand.Code, data = drop_missing_cat)
+one_hot_df <- predict(dummies, newdata = drop_missing_cat) |>
+  as_tibble()
+
+# Add the one hot df to the original and remove the categorical column
+one_hot_df <- drop_missing_cat |>
+  cbind(one_hot_df) |>
+  select(-Brand.Code)
+
+# Impute data
+preprocessor <- preProcess(one_hot_df,
+                           method = "bagImpute") 
+
+imputed_data <- predict(preprocessor, newdata = one_hot_df)
+```
+
+```{r validate imputation occured}
+# Verify no columns have missing data
+imputed_data |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(cols = everything(), names_to = "Column", values_to = "Missing Entries") |>
+  arrange(desc(`Missing Entries`))
+
+# Total number of rows after dropping those outlined earlier
+imputed_data |>
+  summarise(n = n())
+```
+
+```{r write imputed values}
+imputed_data |>
+  write_csv("imputed_test_data.csv")
+```
