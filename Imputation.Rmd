@@ -19,7 +19,6 @@ set.seed(8675309)
 ```
 
 ```{r make parallel}
-stopCluster(cl)
 no_cores <- detectCores() - 1  
 cl <- makeCluster(no_cores)  
 registerDoParallel(cl)
@@ -109,4 +108,8 @@ imputed_data |>
 ```{r write imputed values}
 imputed_data |>
   write_csv("imputed_test_data.csv")
+```
+
+```{r stop cluster}
+stopCluster(cl)
 ```
