@@ -1,0 +1,150 @@
+---
+title: "Cubist modeling"
+author: "Matthew Tillmawitz"
+date: "2024-12-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(Cubist)
+library(caret)
+library(corrplot)
+library(elasticnet)
+library(doParallel)
+set.seed(8675309)
+```
+
+```{r parallel, include=FALSE}
+no_cores <- detectCores() - 1  
+cl <- makeCluster(no_cores)  
+registerDoParallel(cl)
+```
+
+## Data Prep
+
+```{r read and split data, message=FALSE}
+imputed_training_set <- read_csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/imputed_test_data.csv")
+
+in_train <- createDataPartition(imputed_training_set$PH, p = 0.75, times = 1, list = FALSE)
+caret_train <- imputed_training_set[ in_train,]
+caret_test  <- imputed_training_set[-in_train,]
+```
+
+```{r correlation, message=FALSE}
+corrplot(cor(imputed_training_set |> select(-PH)), method = "number", type = "upper")
+```
+
+# Models {.tabset}
+
+## Cubist
+
+$RMSE = 0.09302837$ $R^2 = 0.69702894$ model is largely unexplainable, variable importance should be taken with caution as there are multiple ways to calculate it which can produce drastically different results
+
+```{r cubist model, message=FALSE}
+cubist_grid <- expand.grid(committees = c(1, 10, 50, 100), neighbors = seq(0,9))
+model_control <- trainControl(method = "repeatedcv",
+                           number = 5,
+                           repeats = 5,
+                           allowParallel = TRUE)
+
+cubist_model <- train(
+  PH ~ .,
+  data = caret_train,
+  method = "cubist",
+  tuneGrid = cubist_grid,
+  trControl = model_control
+  )
+```
+
+```{r plot cubist}
+ggplot(cubist_model)
+```
+
+```{r performance cubist}
+cubist_model_pred <- predict(cubist_model, newdata = caret_test)
+postResample(pred = cubist_model_pred, obs = caret_test$PH)
+```
+
+```{r variable imp cubist, message=FALSE}
+varImp(cubist_model)
+```
+
+## Ridge
+
+$RMSE = 0.1318147$  $R^2 = 0.3932898$
+
+```{r ridge model, message=FALSE}
+ridgeGrid <- expand.grid(lambda = seq(0, 0.03, by = 0.005))
+
+ridge_model <- train(
+  PH ~ .,
+  data = caret_train,
+  method = "ridge",
+  preProcess = c("center", "scale", "corr"),
+  tuneGrid = ridgeGrid,
+  trControl = model_control
+  )
+```
+
+```{r plot ridge}
+ggplot(ridge_model)
+```
+
+```{r performance ridge}
+ridge_model_pred <- predict(ridge_model, newdata = caret_test)
+postResample(pred = ridge_model_pred, obs = caret_test$PH)
+```
+
+## LASSO
+
+$RMSE = 0.1295491$  $R^2 = 0.4132855$
+
+```{r lasso model, message=FALSE}
+lassoGrid <- expand.grid(.fraction = seq(.05, 1, length = 20))
+
+lasso_model <- train(
+  PH ~ .,
+  data = caret_train,
+  method = "lasso",
+  preProcess = c("center", "scale"),
+  tuneGrid = lassoGrid,
+  trControl = model_control
+  )
+```
+
+```{r plot lasso}
+ggplot(lasso_model)
+```
+
+```{r performance lasso}
+lasso_model_pred <- predict(lasso_model, newdata = caret_test)
+postResample(pred = lasso_model_pred, obs = caret_test$PH)
+```
+
+## ENET
+
+$RMSE = 0.1296669$  $R^2 = 0.4123143$
+
+```{r Elastic Net model, message=FALSE}
+enetGrid <- expand.grid(.lambda = c(0, 0.01, .1), .fraction = seq(.05, 1, length = 20))
+
+enet_model <- train(
+  PH ~ .,
+  data = caret_train,
+  method = "enet",
+  preProcess = c("center", "scale"),
+  tuneGrid = enetGrid,
+  trControl = model_control
+  )
+```
+
+```{r plot enet}
+ggplot(enet_model)
+```
+
+```{r performance enet}
+enet_model_pred <- predict(enet_model, newdata = caret_test)
+postResample(pred = enet_model_pred, obs = caret_test$PH)
+```
