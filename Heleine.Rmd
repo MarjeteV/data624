@@ -1,0 +1,590 @@
+---
+title: "Project 2_Data 624"
+author: "Heleine Fouda"
+date: "2024-12-10"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    collapse: false
+    code_folding: hide
+    pdf_document:
+      toc: true
+  word_document:
+    toc: true
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+As a team of data scientists at ABC Beverage, we are responding to new
+regulatory requirements by thoroughly analyzing our manufacturing
+process to identify key predictive factors influencing pH levels. Using
+the historical dataset provided to us, we aim to build a reliable
+predictive model that meets compliance standards while supporting
+operational excellence. Our approach will involve: 1. Conducting
+exploratory analysis to identify and understand the factors most
+strongly associated with pH variability, such as temperature,
+pressure,and material composition. 2. Developing and evaluating
+predictive models using statistical and machine learning methods,
+selecting the most accurate and interpretable approach for forecasting
+pH levels. To meet the needs of our diverse audience, we will provide
+both a Non-Technical Report (Section II) and a Technical Report(Section
+I).The Non-Technical Report will summarize our findings and
+recommendations in a clear and business - friendly language to our
+leadership. The Technical Report will be a more detailed document
+outlining our methodology, including the models tested, the performance
+metrics, and our rationale for selecting the final model(s). To ensure
+reproducibility, we converted the provided Excel files to CSV format and
+uploaded them to a publicly accessible GitHub repository. The
+predictions from our models will be delivered in an Excel-compatible
+format and as a pdf for easy review and integration. Both reports, along
+with RMarkdown (.rmd) files and published Rpubs links, will be submitted
+to ensure transparency and accessibility. By combining rigorous analysis
+with clear reporting, we aim to empower leadership at ABC Beverage to
+make informed decisions in compliance with the new regulations.
+
+### Set up the environment: Load all necessary libraries and set the seed for reproducibility.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(randomForest)
+library(xgboost)
+library(dplyr)
+library(readr)
+library(tidymodels)
+library(tidyverse)
+library(doParallel)
+library(mice)
+library(VIM)
+library(e1071)
+library(foreach)
+library(import)
+library(parallel)
+library(ggplot2)
+library(recipes)
+library(writexl)
+library(openxlsx)
+# Setting the seed for reproducibility
+set.seed(8675309)
+
+```
+
+### Create and register a parallel processing cluster
+
+```{r make parallel}
+library(parallel)
+library(doParallel)
+
+# Detect the number of cores
+no_cores <- detectCores() - 1  
+
+# Create the cluster
+cl <- makeCluster(no_cores)
+
+# Register the cluster
+registerDoParallel(cl)
+
+# Properly stop the cluster at the end
+stopCluster(cl)
+
+```
+
+### Data loading and preparation:
+
+```{r }
+test <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+train <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/training%20data.csv")
+```
+
+```{r counts of missing data}
+tidy_train <- train |> 
+  as_tibble()
+tidy_train |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(cols = everything(), names_to = "Column", values_to = "Missing Entries") |>
+  arrange(desc(`Missing Entries`))
+tidy_train |>
+  summarise(n = n())
+```
+
+```{r demonstrate brand values}
+tidy_train |>
+  count(Brand.Code)
+```
+
+```{r check for nzv}
+library(dplyr)
+
+tidy_train |>
+  nearZeroVar(saveMetrics = TRUE) |>
+  dplyr::filter(zeroVar == TRUE | nzv == TRUE)
+
+```
+
+```{r classes of columns}
+sapply(tidy_train, class)
+```
+
+```{r check for patterns in missing data}
+aggr_plot <- aggr(tidy_train, col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(data), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+```
+
+```{r impute training values}
+library(dplyr)
+library(caret)
+# Convert integer columns to numeric to prevent errors
+tidy_train <- tidy_train |>
+  mutate(across(
+    .cols = c('Filler.Speed', 'Hyd.Pressure4', 'Bowl.Setpoint', 'Carb.Flow'),
+    .fns = as.numeric
+  ))
+
+# Drop rows with missing Brand.Code or PH
+drop_missing_cat <- tidy_train |>
+  dplyr::filter(Brand.Code != "" & !is.na(PH))
+
+# Create a one-hot encoding tibble
+dummies <- dummyVars(~ Brand.Code, data = drop_missing_cat)
+one_hot_df <- predict(dummies, newdata = drop_missing_cat) %>%
+  as_tibble()
+
+# Add the one-hot encoded data to the original and remove the categorical column
+one_hot_df <- drop_missing_cat |>
+  cbind(one_hot_df) |>
+  dplyr::select(-Brand.Code)
+
+# Impute data
+preprocessor <- preProcess(one_hot_df, method = "bagImpute")
+imputed_data <- predict(preprocessor, newdata = one_hot_df)
+
+```
+
+```{r validate imputation occured}
+# Verify no columns have missing data
+imputed_data |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(cols = everything(), names_to = "Column", values_to = "Missing Entries") |>
+  arrange(desc(`Missing Entries`))
+# Total number of rows after dropping those outlined earlier
+imputed_data |>
+  summarise(n = n())
+```
+
+```{r write imputed values}
+imputed_data |>
+  write_csv("imputed_test_data.csv")
+
+```
+
+
+## Random Forest Model
+
+```{r message=FALSE}
+# Setting the seed for reproducibility
+set.seed(8675309)
+# Load the imputed training data
+imputed_data <- read_csv("imputed_test_data.csv")
+```
+
+```{r}
+# Split the data into training (75%) and testing (25%) sets, using PH as the target
+data_split <- createDataPartition(imputed_data$PH, p = 0.75, list = FALSE)
+training_data <- imputed_data[data_split, ]
+testing_data <- imputed_data[-data_split, ]
+
+```
+
+```{r}
+# Separate predictors and response variable for both training and testing sets
+train_x <- training_data %>% select(-PH)
+train_y <- training_data$PH
+test_x <- testing_data %>% select(-PH)
+test_y <- testing_data$PH
+
+```
+
+#### Fit a baseline Random Forest model
+
+```{r}
+# Fit a baseline Random Forest model
+rf_model_default <- randomForest(
+  x = train_x, 
+  y = train_y, 
+  ntree = 1000, 
+  importance = TRUE
+)
+pred_default <- predict(rf_model_default, test_x)
+rmse_default <- sqrt(mean((test_y - pred_default)^2))
+cat("Default RMSE:", rmse_default, "\n")
+
+```
+
+```{r}
+rf_model_default
+```
+
+#### Tune mtry
+
+```{r}
+# Tune mtry
+mtry_values <- seq(2, ncol(train_x), by = 2)
+mtry_results <- sapply(mtry_values, function(m) {
+  rf_model <- randomForest(x = train_x, y = train_y, ntree = 1000, mtry = m, importance = TRUE)
+  pred <- predict(rf_model, test_x)
+  sqrt(mean((test_y - pred)^2))
+})
+best_mtry <- mtry_values[which.min(mtry_results)]
+cat("Optimal mtry:", best_mtry, "\n")
+
+```
+
+#### Tune nodesize
+
+```{r}
+# Tune nodesize
+nodesize_values <- c(1, 5, 10, 20)
+nodesize_results <- sapply(nodesize_values, function(n) {
+  rf_model <- randomForest(x = train_x, y = train_y, ntree = 1000, mtry = best_mtry, nodesize = n, importance = TRUE)
+  pred <- predict(rf_model, test_x)
+  sqrt(mean((test_y - pred)^2))
+})
+best_nodesize <- nodesize_values[which.min(nodesize_results)]
+cat("Optimal nodesize:", best_nodesize, "\n")
+```
+
+#### Tune maxnodes
+
+```{r}
+# Tune maxnodes
+maxnodes_values <- seq(10, 50, by = 10)
+maxnodes_results <- sapply(maxnodes_values, function(mn) {
+  rf_model <- randomForest(x = train_x, y = train_y, ntree = 1000, mtry = best_mtry, nodesize = best_nodesize, maxnodes = mn, importance = TRUE)
+  pred <- predict(rf_model, test_x)
+  sqrt(mean((test_y - pred)^2))
+})
+best_maxnodes <- maxnodes_values[which.min(maxnodes_results)]
+cat("Optimal maxnodes:", best_maxnodes, "\n")
+
+```
+
+#### Fit the final optimized Random Forest model
+
+```{r}
+# Fit the final optimized Random Forest model
+rf_model_optimized <- randomForest(
+  x = train_x, 
+  y = train_y, 
+  ntree = 1000, 
+  mtry = best_mtry, 
+  nodesize = best_nodesize, 
+  maxnodes = best_maxnodes, 
+  importance = TRUE
+)
+pred_optimized <- predict(rf_model_optimized, test_x)
+rmse_optimized <- sqrt(mean((test_y - pred_optimized)^2))
+cat("Optimized RMSE:", rmse_optimized, "\n")
+
+```
+
+```{r}
+rf_model_optimized 
+```
+
+```{r}
+# Compare default and optimized results
+cat("Default RMSE:", rmse_default, "\n")
+cat("Optimized RMSE:", rmse_optimized, "\n")
+
+```
+
+#### Variable importance from the final model
+
+```{r}
+# Variable importance from the final model
+varImpPlot(rf_model_optimized, sort = TRUE, n.var = 10)
+
+```
+
+```{r}
+# Visualize variable importance
+importance_data <- as.data.frame(rf_model_optimized$importance)
+importance_data <- importance_data %>%
+  rownames_to_column(var = "Variable") %>%
+  arrange(desc(IncNodePurity)) %>%
+  slice_head(n = 10)
+
+ggplot(importance_data, aes(x = reorder(Variable, IncNodePurity), y = IncNodePurity)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top 10 Variables in Random Forest", x = "Variable", y = "Importance (IncNodePurity)") +
+  theme_minimal()
+```
+
+#### Predictions and performance on the evaluation dataset
+
+```{r message=FALSE}
+
+# Read the test data
+test <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+
+# Apply manual one-hot encoding to the Brand.Code variable
+eval_data <- test %>%
+  mutate(
+    `Brand.Code.B` = ifelse(Brand.Code == "B", 1, 0),
+    `Brand.Code.C` = ifelse(Brand.Code == "C", 1, 0),
+    `Brand.Code.D` = ifelse(Brand.Code == "D", 1, 0)
+  ) %>%
+  select(-Brand.Code)  # Drop the original Brand.Code column
+
+# Write the result to evaluation_data.csv
+write.csv(eval_data, "evaluation_data.csv", row.names = FALSE)
+eval_data <- read_csv("evaluation_data.csv")
+
+```
+
+```{r message=FALSE}
+# Predictions and performance on the evaluation dataset
+eval_data <- read_csv("evaluation_data.csv") # Load evaluation data
+
+# Ensure data types match between train_x and eval_data
+train_x[] <- lapply(train_x, function(x) if(is.integer(x)) as.double(x) else x)
+eval_data[] <- lapply(eval_data, function(x) if(is.integer(x)) as.double(x) else x)
+
+# Recipe for imputation
+recipe_obj <- recipe(~ ., data = train_x) %>%
+  step_impute_bag(all_predictors())
+recipe_prepped <- prep(recipe_obj)
+
+# Align eval_data with train_x
+missing_cols <- setdiff(names(train_x), names(eval_data))
+for (col in missing_cols) eval_data[[col]] <- NA
+eval_data_imputed <- bake(recipe_prepped, new_data = eval_data)
+
+```
+
+```{r}
+# Make predictions on evaluation dataset
+rf_eval_predictions <- predict(rf_model_optimized, newdata = eval_data_imputed)
+cat("Predictions on Evaluation Dataset:", rf_eval_predictions, "\n")
+
+```
+
+#### Convert predicted PH values to an excel format
+
+```{r}
+# Convert predictions to a data frame
+rf_predictions_df <- data.frame("Random Forest - Predicted PH" = rf_eval_predictions)
+
+# Write the data frame to an Excel file
+write_xlsx(rf_predictions_df, path = "Random_Forest_Predicted_PH.xlsx")
+
+cat("Predictions saved to 'Random_Forest_Predicted_PH Values.xlsx'.\n")
+
+```
+
+![Random Forest - Predicted
+PH](images/Random Forest_predicted PH values.png)
+
+## XGBoost Model
+
+```{r}
+# Prepare data for XGBoost
+xgb_train <- xgb.DMatrix(data = as.matrix(training_data[,-which(names(training_data) == "PH")]), 
+                         label = training_data$PH)
+xgb_test <- xgb.DMatrix(data = as.matrix(testing_data[,-which(names(testing_data) == "PH")]), 
+                        label = testing_data$PH)
+```
+
+```{r}
+# Fit XGBoost model
+xgb_model <- xgboost(data = xgb_train, nrounds = 500, objective = "reg:squarederror", verbose = 0)
+xgb_model
+```
+
+```{r}
+# Make predictions
+xgb_predictions <- predict(xgb_model, xgb_test)
+xgb_predictions
+```
+
+```{r}
+# Evaluate model performance
+xgb_performance <- postResample(pred = xgb_predictions, obs = testing_data$PH)
+print(xgb_performance)
+
+```
+
+#### Convert XGBoost prediction to an Excel format
+
+```{r}
+# Make predictions using your XGBoost model
+xgb_predictions_ph <- predict(xgb_model, xgb_test)
+
+# Convert predictions to a DataFrame
+df_predictions <- data.frame(Predicted_PH = xgb_predictions_ph)
+```
+
+
+```{r}
+# Save the predictions to an Excel file
+library(writexl)
+write_xlsx(df_predictions, path = "XGBoost_Predicted_PH.xlsx")  # Specify a valid file name
+
+cat("Predictions saved to XGBoost_Predicted_PH.xlsx\n")
+
+
+```
+
+#### Important variable
+
+```{r}
+# Get feature importance
+feature_importance <- xgb.importance(model = xgb_model, feature_names = colnames(training_data[,-which(names(training_data) == "PH")]))
+
+# Print the feature importance
+print(feature_importance)
+```
+
+```{r}
+# Extract the most important variable
+most_important_variable <- feature_importance$Feature[which.max(feature_importance$Gain)]
+cat("Most Important Variable:", most_important_variable, "\n")
+
+```
+
+```{r}
+# Visualize the top 10 variables in XGBoost
+# Compute feature importance
+feature_importance <- xgb.importance(model = xgb_model, feature_names = colnames(training_data[,-which(names(training_data) == "PH")]))
+
+# Select top 10 most important variables
+top_10_features <- head(feature_importance, 10)
+
+# Create a bar plot using ggplot2
+ggplot(top_10_features, aes(x = reorder(Feature, Gain), y = Gain)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Top 10 Variables in XGBoost Model",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  theme_minimal()
+
+```
+
+#### XGBoost Performance on the test/evaluation dataset
+
+We begin by loading the evaluation data
+
+```{r}
+# Load the evaluation data
+eval_data <- read_csv("evaluation_data.csv")  # Load evaluation data
+```
+
+Then, we ensure there is consistency between train_x and eval_data
+
+```{r}
+# Ensure consistency between train_x and eval_data
+# Assuming train_x already has the columns: Brand.CodeA, Brand.CodeB, Brand.CodeC, Brand.CodeD
+
+# Check the columns of both datasets
+train_columns <- colnames(train_x)
+eval_columns <- colnames(eval_data)
+
+# Add missing columns to eval_data with default 0 values
+missing_columns <- setdiff(train_columns, eval_columns)
+for (col in missing_columns) {
+  eval_data[[col]] <- 0  # Add the missing columns and set to 0
+}
+
+# Reorder eval_data columns to match train_x column order
+eval_data <- eval_data[, train_columns]
+
+```
+
+Next, we prepare the recipe for both training and evaluation datasets
+
+```{r}
+library(recipes)
+# Ensure `train_x` exists and contains all necessary predictors
+recipe_obj_xgb <- recipe(~ ., data = train_x) |>
+  step_impute_bag(all_predictors())  # Add other preprocessing steps if needed
+
+# Prepare the recipe for both training and evaluation datasets
+recipe_prepped_xgb <- prep(recipe_obj_xgb)
+
+```
+
+Next, we Impute missing values in both train_x and eval_data
+
+```{r}
+# Impute missing values in both train_x and eval_data
+train_x_imputed_xgb <- bake(recipe_prepped_xgb, new_data = train_x)
+eval_data_imputed_xgb <- bake(recipe_prepped_xgb, new_data = eval_data)
+
+```
+
+Then, we convert imputed evaluation data to XGBoost DMatrix
+
+```{r}
+# Convert imputed evaluation data to XGBoost DMatrix
+eval_matrix <- xgb.DMatrix(data = as.matrix(eval_data_imputed_xgb))
+```
+
+We make predictions using the XGBoost model
+
+```{r}
+# Make predictions using the XGBoost model
+xgb_eval_predictions <- predict(xgb_model, newdata = eval_matrix)
+```
+
+As a final step, we check if the number of rows in our eval data matches
+the length of predictions
+
+```{r}
+# Check if the number of rows in your eval data matches the length of predictions
+if (nrow(eval_data) != length(xgb_eval_predictions)) {
+  # If they don't match, subset test_y to match the number of predictions
+  test_y <- test_y[1:length(xgb_eval_predictions)]
+}
+
+# Now, both xgb_eval_predictions and test_y should have the same length
+xgb_eval_performance <- postResample(pred = xgb_eval_predictions, obs = test_y)
+
+# Print performance
+print(xgb_eval_performance)
+
+```
+
+#### Save XGboost predictions of PH values to an Excel file
+
+![](images/XgboostValues.png)
+
+```{r}
+library(openxlsx)
+
+# Create a data frame for predictions
+predictions_df <- data.frame(Predicted_PH = xgb_eval_predictions)
+
+# Save predictions to an Excel file 
+write.xlsx(predictions_df, file = "XGBoost_Predicted_PH.xlsx", sheetName = "Predictions", rowNames = FALSE)
+
+cat("Predictions saved to XGBoost_Predicted_PH.xlsx\n")
+
+
+```
+
+```{r}
+# Read the Excel file into R
+predictions_read <- read.xlsx("XGBoost_Predicted_PH.xlsx", sheet = "Predictions")
+
+# Display the imported data
+head(predictions_read)
+
+```
