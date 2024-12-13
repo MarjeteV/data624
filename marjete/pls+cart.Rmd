@@ -1,0 +1,118 @@
+---
+title: "PLS & CART"
+author: "Marjete Vucinaj"
+date: "2024-12-11"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+
+set.seed(8675309)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(readr)
+library(pls)
+library(magrittr)
+library(tidyverse)
+library(caret)
+library(rpart)
+library(doParallel)
+```
+
+Response Variable.: PH
+
+```{r}
+imputed_data <- read_csv("imputed_test_data.csv", show_col_types = FALSE)
+
+```
+
+
+```{r}
+# Split
+train_index <- createDataPartition(imputed_data$PH, p = 0.75, list = FALSE)
+train_data <- imputed_data[train_index, ]
+test_data <- imputed_data[-train_index, ]
+
+```
+
+
+```{r}
+pls_model <- plsr(PH ~ ., data = train_data, ncomp = 10, validation = "CV")
+
+optimal_components <- which.min(RMSEP(pls_model)$val[1, , -1])
+
+pls_final_model <- plsr(PH ~ ., data = train_data, ncomp = optimal_components)
+
+# Predictions and performance evaluation
+predictions <- predict(pls_final_model, newdata = test_data, ncomp = optimal_components)
+rmse <- sqrt(mean((test_data$PH - predictions)^2))
+r_squared <- cor(test_data$PH, predictions)^2
+mae <- mean(abs(test_data$PH - predictions))
+
+cat("Optimal Components:", optimal_components, "\n")
+cat("Test RMSE:", rmse, "\n")
+cat("Test R²:", r_squared, "\n")
+cat("Test MAE:", mae, "\n")
+#also ran the mode wil ncomp= 7 for simplicity and r^2 was smaller
+
+```
+
+
+
+CART: Regression: response variable is numerical and continuous.
+
+```{r}
+
+cl <- makeCluster(detectCores() - 1)  
+registerDoParallel(cl)
+
+#tuning grid
+tune_grid <- expand.grid(
+  cp = seq(0.001, 0.05, by = 0.005)  
+)
+
+optimized_train_control <- trainControl(
+  method = "cv",
+  number = 5,           
+  verboseIter = FALSE,  
+  allowParallel = TRUE
+)
+
+# Train  using caret
+optimized_cart_model <- train(
+  PH ~ ., 
+  data = train_data,
+  method = "rpart",
+  trControl = optimized_train_control, 
+  tuneGrid = tune_grid  
+)
+
+best_hyperparameters <- optimized_cart_model$bestTune
+cat("Best Hyperparameter (cp):\n")
+print(best_hyperparameters)
+
+final_predictions <- predict(optimized_cart_model, newdata = test_data)
+
+cart_rmse <- sqrt(mean((test_data$PH - final_predictions)^2))
+cart_r_squared <- cor(test_data$PH, final_predictions)^2
+cart_mae <- mean(abs(test_data$PH - final_predictions))
+
+cat("Optimized CART Test RMSE:", cart_rmse, "\n")
+cat("Optimized CART Test R²:", cart_r_squared, "\n")
+cat("Optimized CART Test MAE:", cart_mae, "\n")
+
+
+stopCluster(cl)
+
+
+#cp of 	0.001	is the minimal error
+```
+
+
+
+
