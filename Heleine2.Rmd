@@ -1,0 +1,1149 @@
+---
+title: "Project 2_Data 624"
+author: "Heleine Fouda"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    collapse: false
+    code_folding: hide
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+  word_document:
+    toc: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+### Set up the environment: Load all necessary libraries and set the seed for reproducibility.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Resolve the conflict globally
+conflicted::conflicts_prefer(Metrics::rmse)  
+library(caret)
+library(randomForest)
+library(xgboost)
+library(dplyr)
+library(readr)
+library(tidymodels)
+library(tidyverse)
+library(doParallel)
+library(mice)
+library(VIM)
+library(e1071)
+library(foreach)
+library(import)
+library(parallel)
+library(ggplot2)
+library(recipes)
+library(writexl)
+library(openxlsx)
+library(rsample)
+library(randomForest)
+library(janitor)
+library(skimr)
+library(vip)
+# Setting the seed for reproducibility
+set.seed(8675309)
+
+```
+
+## Data Preparation: Import and read the training and evaluation datasets into R
+
+```{r}
+
+train_raw <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/training%20data.csv")
+test_raw <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+
+# Quick overview of the datasets
+glimpse(train_raw)
+glimpse(test_raw)
+```
+
+### Exploratory Data Analysis (EDA)
+
+We will start by examining the raw datasets to understand the variables, their structure and their distribution using appropriate visualizations and summary statistics.
+
+```{r}
+##Summary and structure of the data
+summary(train_raw)
+summary(test_raw)
+```
+
+### View the first few rows of the data
+
+```{r}
+# View the first few rows of the data
+head(test_raw )
+```
+
+#### Visualize distributions of numerical variables
+
+```{r}
+train_raw %>%
+  keep(is.numeric) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = Value)) +
+  geom_histogram(bins = 15, fill = "steelblue", color = "black", alpha = 0.7) +
+  facet_wrap(~Variable, scales = "free") +
+  labs(title = "Distribution of Numerical Variables", x = "Value", y = "Frequency") +
+  theme_minimal()
+```
+
+#### Check for missing values
+
+```{r}
+train_raw %>%
+  summarise_all(~mean(is.na(.))) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Proportion_Missing") %>%
+  ggplot(aes(x = Variable, y = Proportion_Missing)) +
+  geom_col(fill = "red") +
+  labs(title = "Proportion of Missing Values", x = "Variable", y = "Proportion Missing") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Data Preprocessing
+
+#### One-hot encoding for `Brand.Code`
+
+```{r}
+train_encoded <- train_raw %>%
+  mutate(across(starts_with("Brand.Code"), ~ifelse(. == "B", 1, 0))) %>%
+  select(-Brand.Code)
+
+test_encoded <- test_raw %>%
+  mutate(across(starts_with("Brand.Code"), ~ifelse(. == "B", 1, 0))) %>%
+  select(-Brand.Code)
+```
+
+#### Impute missing values using predictive mean matching
+
+```{r}
+train_imputed <- mice(train_encoded, m = 1, method = 'pmm', print = FALSE) %>% complete()
+
+# Remove low-variance predictors
+train_clean <- train_imputed[, -nearZeroVar(train_imputed)]
+```
+
+### Final Preprocessing for Modeling - Standardize and clean datasets
+
+```{r}
+# Create preprocessing object for the training data
+preprocess <- preProcess(train_clean, method = c("corr", "nzv"))
+
+# Apply preprocessing to training data
+train_df <- predict(preprocess, newdata = train_clean) %>%
+  as_tibble() %>%
+  janitor::clean_names() %>%
+  relocate(ph, .before = everything())
+
+# Apply the same preprocessing object to the test data
+test_df <- predict(preprocess, newdata = test_encoded) %>%
+  as_tibble() %>%
+  janitor::clean_names()
+
+```
+
+#### Histogram of the target variable (PH)
+
+```{r}
+train_df %>%
+  ggplot(aes(x = ph)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "black", alpha = 0.7) +
+  labs(title = "Histogram of PH", x = "PH", y = "Frequency") +
+  theme_minimal()
+```
+
+#### Scatter plots of predictors vs target variable (PH)
+
+```{r}
+train_df %>%
+  pivot_longer(-ph, names_to = "Predictor", values_to = "Value") %>%
+  ggplot(aes(x = Value, y = ph)) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(~Predictor, scales = "free") +
+  labs(title = "Scatter Plots of Predictors vs PH", x = "Predictor Value", y = "PH") +
+  theme_minimal()
+```
+
+**Key observations:**
+
+The *glimpse* function shows that the raw training dataset contains 2,571 observations across 33 variables, including some categorical values and missing data (with the MFR variable having up to 212 NAs). The test/evaluation dataset has 267 observations with the same 33 variables and also includes missing values.
+
+Summary statistics of both the training and the evaluation/test datasets confirm the presence of several missing values. The *summary* function also reveals that some variables exhibit outliers or unusual distributions. The train dataset for instance, contains several missing values, notably in variables like *Fill.Ounces*, *PC.Volume*, and *Mnf.Flow*, with the response variable *PH* entirely missing for all observations, requiring special attention. Most continuous variables, including *Carb.Volume*, *PC.Volume*, and *Fill.Ounces*, show consistent distributions with low variability, while *Carb.Pressure* and *Carb.Temp* exhibit some outliers, such as a max of 77.6 for *Carb.Pressure.* *Mnf.Flow* has an unusually wide range, indicating potential outliers or data errors. Explanatory variables like *Carb.Pressure1* and *Filler.Level* have stable distributions, though *MFR* shows higher variability and numerous missing values. The dataset also includes both categorical (e.g., Brand.Code) and continuous variables, necessitating further exploration for handling categorical data. Addressing these issues and handling the categorical variables appropriately will be essential before moving forward with modeling and analysis.
+
+### Preparing for modeling and analysis
+
+```{r}
+train <- train_encoded
+test <- test_encoded
+
+
+train <- mice(train, m = 1, method = 'pmm', print = FALSE) %>% complete()
+
+# filtering low frequencies
+train <- train[, -nearZeroVar(train)]
+```
+
+### Preparing for modeling and analysis
+
+In this phase our anlysis we have prepare the training and testing datasets for analysis by cleaning and standardizing the data. First, we converted both datasets to matrices and applied preprocessing to remove highly correlated features, eliminate low-variance variables, and, for the test data, impute missing values with the median. Afterward, we converted the datasets back into tables, reordered the training data to place the target variable `PH` first, and cleaned column names for consistency. These steps ensure the data is clean, organized, and ready for effective analysis or modeling.
+
+```{r counts of missing data}
+test <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+train <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/training%20data.csv")
+tidy_train <- train |> 
+  as_tibble()
+tidy_train |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(cols = everything(), names_to = "Column", values_to = "Missing Entries") |>
+  arrange(desc(`Missing Entries`))
+tidy_train |>
+  summarise(n = n())
+```
+
+
+#### Preprocessing
+
+```{r}
+
+test <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+training <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/training%20data.csv")
+
+train <-  read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/training%20data.csv")
+train <- train %>% 
+  mutate(`Brand Code B` = case_when(
+    `Brand.Code` == "A" ~ 0,
+    `Brand.Code` == "B" ~ 1,
+    `Brand.Code` == "C" ~ 0,
+    `Brand.Code` == "D" ~ 0,
+    TRUE ~ 0
+  ),
+  `Brand Code C` = case_when(
+    `Brand.Code` == "A" ~ 0,
+    `Brand.Code` == "B" ~ 0,
+    `Brand.Code` == "C" ~ 1,
+    `Brand.Code` == "D" ~ 0,
+    TRUE ~ 0
+  ),
+  `Brand Code D` = case_when(
+    `Brand.Code` == "A" ~ 0,
+    `Brand.Code` == "B" ~ 0,
+    `Brand.Code` == "C" ~ 0,
+    `Brand.Code` == "D" ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  select(-`Brand.Code`)
+
+test <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+test <- test %>% 
+  mutate(`Brand Code B` = case_when(
+    `Brand.Code` == "A" ~ 0,
+    `Brand.Code` == "B" ~ 1,
+    `Brand.Code` == "C" ~ 0,
+    `Brand.Code` == "D" ~ 0,
+    TRUE ~ 0
+  ),
+  `Brand Code C` = case_when(
+    `Brand.Code` == "A" ~ 0,
+    `Brand.Code` == "B" ~ 0,
+    `Brand.Code` == "C" ~ 1,
+    `Brand.Code` == "D" ~ 0,
+    TRUE ~ 0
+  ),
+  `Brand Code D` = case_when(
+    `Brand.Code` == "A" ~ 0,
+    `Brand.Code` == "B" ~ 0,
+    `Brand.Code` == "C" ~ 0,
+    `Brand.Code` == "D" ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  select(-`Brand.Code`)
+
+```
+
+#### Remove Nas
+
+```{r}
+train <- train %>% 
+  drop_na()
+
+skim(train)
+
+```
+
+```{r}
+# train data
+temp_df <- data.matrix(train) 
+preprocessing <- preProcess(temp_df, method = c("corr", "nzv"))
+student_train_preprocess <-  predict(preprocessing, temp_df) 
+train_df <- as_tibble(student_train_preprocess)
+temp_df2 <- data.matrix(test)
+
+
+# test data
+preprocessing <- preProcess(temp_df2, method = c("medianImpute","corr", "nzv"))
+student_test_preprocess <-  predict(preprocessing, temp_df2) 
+test_df <- as_tibble(student_test_preprocess)
+
+
+train_df <- train_df %>% 
+  select(PH, everything()) %>%
+  clean_names()
+
+test_df <- test_df %>% 
+  select(everything()) %>%
+  clean_names()
+
+```
+
+```{r}
+
+# Impute missing values in the 'ph' column (e.g., with the median)
+train_df_imputed <- train_df %>% 
+  mutate(ph = ifelse(is.na(ph), median(ph, na.rm = TRUE), ph))
+
+# Perform the initial split
+set.seed(8675309)
+ph_split <- initial_split(train_df_imputed, strata = ph)
+ph_train <- training(ph_split)
+ph_test  <- testing(ph_split)
+
+# Bootstrap resampling on training set
+set.seed(8675309)
+ph_folds <- bootstraps(ph_train, strata = ph)
+
+```
+
+## Random Forest Model
+
+Random Forest is a versatile machine learning ensemble algorithm that combines multiple independent decision trees to enhance predictive performance. Each tree operates on a subset of the data and features, ensuring diversity and reducing the risk of overfitting. Particularly well-suited for both regression and classification tasks, it will be employed in this project for regression. The algorithm offers automatic variable selection, effectively handles missing values, and leverages the collective predictions of its trees to improve stability and accuracy, making it a robust choice for this application.
+
+Baseline Random Forest
+
+```{r}
+train <- train %>% 
+  drop_na()
+
+# Skim the train data to understand its structure
+skim(train)
+
+# Data Preprocessing: Removing correlated variables and near-zero variance predictors
+temp_df <- data.matrix(train) 
+preprocessing <- preProcess(temp_df, method = c("corr", "nzv"))
+student_train_preprocess <- predict(preprocessing, temp_df) 
+train_df <- as_tibble(student_train_preprocess)
+
+# Apply similar preprocessing to the test set
+temp_df2 <- data.matrix(test)
+preprocessing_test <- preProcess(temp_df2, method = c("medianImpute", "corr", "nzv"))
+student_test_preprocess <- predict(preprocessing_test, temp_df2) 
+test_df <- as_tibble(student_test_preprocess)
+
+# Clean column names for consistency
+train_df <- train_df %>% 
+  select(PH, everything()) %>%
+  clean_names()
+
+test_df <- test_df %>% 
+  select(everything()) %>%
+  clean_names()
+
+```
+
+```{r}
+# Impute missing values in the 'ph' column (e.g., with the median)
+train_df_imputed <- train_df %>% 
+  mutate(ph = ifelse(is.na(ph), median(ph, na.rm = TRUE), ph))
+
+```
+
+```{r}
+# Perform the initial split into training and testing sets
+set.seed(8675309)
+ph_split <- initial_split(train_df_imputed, strata = ph)
+ph_train <- training(ph_split)
+ph_test  <- testing(ph_split)
+
+# Perform bootstrap resampling on the training set
+set.seed(8675309)
+ph_folds <- bootstraps(ph_train, strata = ph)
+
+```
+
+```{r}
+# Separate predictors and response variable for training set
+train_x <- ph_train %>% select(-ph)
+train_y <- ph_train$ph
+
+# Train a baseline Random Forest model
+rf_model_default <- randomForest(x = train_x, y = train_y, ntree = 1000, importance = TRUE)
+
+# Check the model summary
+print(rf_model_default)
+
+```
+
+Our default baseline model output indicates that the model was trained with 1000 trees, using 9 variables for each split. The model's performance is evaluated with a Mean Squared Residual (MSR) of 0.0101, suggesting a low average squared difference between predicted and actual values. The model explains 65.48% of the variance in the response variable, indicating a moderate level of predictive power. This suggests that the model captures a significant portion of the data's underlying patterns but has room for improvement in terms of accuracy.
+
+#### Model performance on Test Set
+
+```{r}
+# Separate predictors and response variable for testing set
+test_x <- ph_test %>% select(-ph)
+test_y <- ph_test$ph
+
+# Predict on the test set
+pred_default <- predict(rf_model_default, test_x)
+
+# Calculate RMSE
+rmse_default <- sqrt(mean((test_y - pred_default)^2))
+
+# Print RMSE
+cat("Default Random Forest RMSE:", rmse_default, "\n")
+
+```
+
+The default Random Forest model has an RMSE of 0.1017, indicating a moderate level of error in its predictions. While the model performs reasonably well, there is still potential for improvement in reducing prediction errors.
+
+#### Variable Importance
+
+```{r}
+# Extract the importance data
+var_imp_df <- as.data.frame(rf_model_default$importance)
+var_imp_df$Variable <- rownames(var_imp_df)  # Add variable names as a column
+
+# Sort by %IncMSE in descending order
+top_10_vars <- var_imp_df %>%
+  arrange(desc(`%IncMSE`)) %>%
+  head(10)
+
+# Visualize with horizontal bars
+ggplot(top_10_vars, aes(x = reorder(Variable, `%IncMSE`), y = `%IncMSE`)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Top 10 Important Variables - Random Forest",
+       x = "Importance (% Increase in MSE)", y = "Variable") +
+  theme_minimal() +
+  coord_flip()  
+
+```
+
+```{r}
+# Predict on the test set
+pred_default <- predict(rf_model_default, test_x)
+
+
+residuals <- test_y - pred_default
+
+# Plot residuals versus predicted values
+plot(pred_default, residuals, 
+     main = "Residuals vs Predicted Values", 
+     xlab = "Predicted Values", 
+     ylab = "Residuals", 
+     pch = 16, 
+     col = "blue")
+abline(h = 0, col = "red", lwd = 2)  
+
+```
+
+
+#### Converting the PH predictions of our baseline rf model into an Excel format:
+
+```{r}
+
+# Predict on the test set
+pred_default <- predict(rf_model_default, test_x)
+
+# Create a data frame to store predictions
+predictions_df <- data.frame(Predicted_PH = pred_default)
+
+# Write the predictions to an Excel file
+output_file <- "ABC_PH_Predictions.xlsx"
+write.xlsx(predictions_df, file = output_file)
+
+cat("Predictions have been saved to", output_file, "\n")
+
+```
+
+![](images/baseline.png)
+
+#### Hyperparameter Tuning
+
+We will now try to improve the performance of our default rf model through Hyperparameter Tuning
+
+```{r}
+# Separate predictors and response variable for training set
+train_x <- ph_train %>% select(-ph)
+train_y <- ph_train$ph
+
+# Separate predictors and response variable for testing set
+test_x <- ph_test %>% select(-ph)
+test_y <- ph_test$ph
+
+```
+
+```{r}
+# Define the grid for tuning hyperparameters
+tune_grid <- expand.grid(
+  mtry = c(2, 4, 6, 8, 10),  # Number of variables to sample at each split
+  min_n = c(1, 5, 10),       # Minimum node size
+  splitrule = "variance",    # Splitting criterion for regression (variance)
+  tree_depth = c(5, 10, 15)  # Depth of each tree (max depth)
+)
+
+```
+
+#### Tune mtry (Number of Features per Split):
+
+```{r}
+# Adjust `mtry` manually
+rf_model <- randomForest(ph ~ ., data = train_df, ntree = 1000, mtry = floor(sqrt(ncol(train_df))))
+```
+
+#### Cross-validation for Model Evaluation
+
+Using k-fold cross-validationcan give a better estimate of model performance and help avoid overfitting.
+
+```{r}
+# Cross-validation with caret without parallel processing
+set.seed(8675309)
+
+# Set up trainControl with cross-validation (5 folds) and without parallel processing
+train_control <- trainControl(method = "cv", number = 5, allowParallel = FALSE)
+
+# Train the Random Forest model using caret's train() function
+rf_model_cv <- train(ph ~ ., data = train_df, method = "rf", trControl = train_control, ntree = 1000)
+
+# Print the model results
+print(rf_model_cv)
+
+```
+
+```{r}
+# Cross-validation with caret without parallel processing
+# Extract the resampling results (RMSE for each fold)
+cv_rmse <- rf_model_cv$resample$RMSE
+
+# View RMSE for each fold
+print(cv_rmse)
+
+# Plot RMSE profile across the 5 folds
+library(ggplot2)
+ggplot(data.frame(Fold = 1:length(cv_rmse), RMSE = cv_rmse), aes(x = Fold, y = RMSE)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Cross-Validation RMSE Profile for Random Forest",
+       x = "Fold",
+       y = "RMSE") +
+  theme_minimal()
+
+```
+
+#### Out-of-Bag (OOB) Error for Model Tuning:
+
+Random Forest inherently provides an Out-of-Bag (OOB) error estimate, which is the average error of each tree on the data it did not see. OOB is a quick way to check of rf model performance,
+
+```{r}
+# Out-of-Bag (OOB) Error for Model Tuning:
+
+rf_model <- randomForest(ph ~ ., data = train_df, ntree = 1000)
+oob_error <- rf_model$err.rate[rf_model$ntree, "OOB"]
+cat("OOB Error Rate:", oob_error, "\n")
+rf_model
+```
+
+#### Pruning Trees (Controlling Tree Depth):
+
+Random Forest builds trees until they are pure, but this can sometimes lead to overfitting. Wecan limit the depth of the trees to prevent overfitting by setting a maximum depth.
+
+```{r}
+rf_model <- randomForest(ph ~ ., data = train_df, ntree = 1000, maxnodes = 30)  # Limit tree depth
+rf_model
+```
+
+
+
+## XGBoost Model
+
+XGBoost (Extreme Gradient Boosting) is a robust machine learning algorithm built on gradient boosting techniques, which combine gradient descent for numerical optimization with boosting, an ensemble method that iteratively improves weak learners to create strong models. The term "gradient" reflects the algorithm's use of derivatives from the loss function to optimize predictions. XGBoost operates through three main components: an additive model that sequentially builds improvements, a customizable differentiable loss function to measure prediction errors, and weak learners, typically decision trees, refined iteratively by addressing their shortcomings.XGBoost enhances flexibility and predictive performance by framing boosting as a numerical optimization problem, making it a favored tool in machine learning.
+
+##### Prepare Data for XGBoost
+
+```{r}
+temp_df <- data.matrix(train) 
+preprocessing <- preProcess(temp_df, method = c("corr", "nzv"))
+train_df <- predict(preprocessing, temp_df)
+temp_df2 <- data.matrix(test)
+test_df <- predict(preprocessing, temp_df2)
+
+# Clean column names and order them
+train_df <- train_df %>% 
+  clean_names()  # Just clean the names to handle any issues with formatting
+
+test_df <- test_df %>% 
+  clean_names()
+
+
+colnames(train_df) 
+
+
+train_df <- as.data.frame(train_df)
+
+# Impute missing values in the 'ph' column (replace NAs with median)
+train_df_imputed <- train_df %>% 
+  mutate(ph = ifelse(is.na(ph), median(ph, na.rm = TRUE), ph))
+
+# Proceed with the train-test split
+set.seed(8675309)
+ph_split <- initial_split(train_df_imputed, strata = ph)
+ph_train <- training(ph_split)
+ph_test  <- testing(ph_split)
+```
+####  Fit XGBoost Model
+
+```{r}
+set.seed(8675309)
+ph_split <- initial_split(train_df_imputed, strata = ph)
+ph_train <- training(ph_split)
+ph_test  <- testing(ph_split)
+
+
+train_x <- as.matrix(ph_train %>% select(-ph))
+train_y <- ph_train$ph
+test_x <- as.matrix(ph_test %>% select(-ph))
+test_y <- ph_test$ph
+
+```
+
+```{r}
+# Fit XGBoost Model
+dtrain <- xgb.DMatrix(data = train_x, label = train_y)
+dtest <- xgb.DMatrix(data = test_x, label = test_y)
+
+params <- list(
+  objective = "reg:squarederror",  # regression task
+  eval_metric = "rmse"  # root mean square error
+)
+```
+
+
+
+#### Training the XGBoost model
+```{r}
+# Train the XGBoost model
+xgb_model <- xgb.train(
+  params = params, 
+  data = dtrain, 
+  nrounds = 1000,  # Number of boosting rounds
+  watchlist = list(train = dtrain, test = dtest), 
+  early_stopping_rounds = 10  # Stop early if no improvement
+)
+```
+The output shows the progress of training an XGBoost model, with RMSE values for both the training and test datasets at each iteration. Initially, the RMSE for both the training and test sets decreases significantly, indicating that the model is learning and improving. After approximately 40 iterations, the RMSE stabilizes, with minimal improvement observed in further iterations. The model stops early due to the test RMSE not improving for 10 consecutive rounds, with the best performance achieved at iteration 40, where the test RMSE reached 0.1098.
+
+#### Making  Predictions
+
+```{r}
+# Make Predictions
+pred_default <- predict(xgb_model, newdata = test_x)
+
+```
+
+
+```{r}
+# Evaluate Model Performance (RMSE)
+rmse_default <- sqrt(mean((test_y - pred_default)^2))
+cat("XGBoost Model RMSE:", rmse_default, "\n")
+```
+
+The XGBoost model achieved a test RMSE of 0.109838, indicating that the model's predictions are fairly accurate with respect to the test data. A lower RMSE value typically suggests that the model is performing well in predicting the target variable, with errors between the predicted and actual values being relatively small. We are aware that our XGBoost model's performance could be further improved with additional feature engineering, hyperparameter tuning, or trying different model configurations.
+
+```{r}
+# Feature Importance Extraction
+importance_matrix <- xgb.importance(feature_names = colnames(train_x), model = xgb_model)
+
+```
+
+#### # Top 10 Important Variables
+```{r}
+# Top 10 Important Variables
+top_10_importance <- importance_matrix %>% 
+  arrange(desc(Gain)) %>%
+  dplyr::slice(1:10)  # Explicitly using dplyr::slice()
+print(top_10_importance)
+```
+
+#### Variables visualization
+
+As in Random Forest, mnf_flow is the leading predictors in the XGBoost model
+```{r}
+# Visualize Top 10 Important Variables
+ggplot(top_10_importance, aes(x = reorder(Feature, Gain), y = Gain)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +  # Flip axes for horizontal bars
+  labs(title = "Top 10 Important Variables - XGBoost",
+       x = "Variable", y = "Importance (Gain)") +
+  theme_minimal()
+```
+
+#### Model performance
+```{r}
+#
+eval_log <- xgb_model$evaluation_log
+
+# Extract RMSE for both training and testing
+train_rmse <- eval_log$train_rmse
+test_rmse <- eval_log$test_rmse
+
+# Find the best iteration (the iteration where the test RMSE is the minimum)
+best_iter <- which.min(test_rmse)
+
+# Extract the best RMSE for both train and test sets at the best iteration
+best_train_rmse <- train_rmse[best_iter]
+best_test_rmse <- test_rmse[best_iter]
+
+# Print the performance metrics
+cat("Performance Metrics for XGBoost Model:\n")
+cat("Best Iteration:", best_iter, "\n")
+cat("Training RMSE at Best Iteration:", best_train_rmse, "\n")
+cat("Test RMSE at Best Iteration:", best_test_rmse, "\n")
+cat("\nFull RMSE Log:\n")
+cat("Train RMSE: ", train_rmse, "\n")
+cat("Test RMSE: ", test_rmse, "\n")
+
+
+```
+
+```{r}
+
+pred_default <- predict(xgb_model, dtest)
+actual_values <- test_y  # Replace this with the actual test values
+
+# Calculate R-squared
+residuals <- actual_values - pred_default
+ss_total <- sum((actual_values - mean(actual_values))^2)
+ss_residual <- sum(residuals^2)
+r_squared <- 1 - (ss_residual / ss_total)
+
+cat("R-squared: ", r_squared)
+
+```
+
+The XGBoost model shows a significant reduction in both training and testing RMSE, with the best iteration (40) yielding a training RMSE of 0.0371 and a testing RMSE of 0.1098, indicating a good fit. The early stopping mechanism helped prevent overfitting, though test RMSE suggests potential for further improvements. The model explains 59.26% of the variance in the test data, as indicated by the R-squared value of 0.5926, leaving room for better generalization.
+
+####  Hyperparameter Tuning for XGBoost:
+
+```{r}
+# Create a cluster
+cl <- makeCluster(4)
+
+# Register the parallel backend
+registerDoParallel(cl)
+
+# Set up Parallel Processing
+
+# Create a cluster with the number of cores you want to use (for example, 4 cores)
+cl <- makeCluster(4)
+
+# Register the parallel backend
+registerDoParallel(cl)
+
+```
+
+
+```{r}
+
+#  Define Train Control
+
+train_control <- trainControl(
+  method = "cv",            # Cross-validation method
+  number = 5,               # Number of folds for cross-validation
+  allowParallel = TRUE,     # Allow parallel processing
+  verboseIter = TRUE        # Print progress of iterations
+)
+```
+
+
+ Tuning max_depth Parameter:
+ 
+ 
+```{r}
+# Tuning max_depth Parameter
+
+# Define a range of values for max_depth
+param_grid_max_depth <- expand.grid(
+  nrounds = 100,           # Fixed nrounds
+  max_depth = c(3, 6, 9),  # Hyperparameter to tune
+  eta = 0.1,               # Fixed eta (learning rate)
+  gamma = 0,               # Fixed gamma
+  colsample_bytree = 0.8,  # Fixed colsample_bytree
+  min_child_weight = 1,    # Fixed min_child_weight
+  subsample = 0.8          # Fixed subsample
+)
+
+```
+
+```{r}
+
+# Train the model with max_depth tuning
+xgb_tune_max_depth <- train(
+  ph ~ .,  # Target variable
+  data = train_df,  # Training data
+  method = "xgbTree",  # XGBoost model
+  trControl = train_control,
+  tuneGrid = param_grid_max_depth,
+  metric = "RMSE"  # Use RMSE for evaluation
+)
+
+# Best max_depth after tuning
+print(xgb_tune_max_depth$bestTune)
+```
+
+ 
+```{r}
+# Visualize the results
+ggplot(xgb_tune_max_depth) +
+  theme_minimal() +
+  ggtitle("Tuning max_depth Hyperparameter") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+ ##### Tuning eta (Learning Rate) Parameter
+ 
+```{r}
+# STuning eta (Learning Rate) Parameter
+
+# Define a range of values for eta (learning rate)
+param_grid_eta <- expand.grid(
+  nrounds = 100,           # Fixed nrounds
+  max_depth = 6,           # Fixed max_depth (from previous step)
+  eta = c(0.01, 0.05, 0.1),  # Hyperparameter to tune
+  gamma = 0,               # Fixed gamma
+  colsample_bytree = 0.8,  # Fixed colsample_bytree
+  min_child_weight = 1,    # Fixed min_child_weight
+  subsample = 0.8          # Fixed subsample
+)
+
+# Train the model with eta tuning
+xgb_tune_eta <- train(
+  ph ~ .,  # Target variable
+  data = train_df,  # Training data
+  method = "xgbTree",  # XGBoost model
+  trControl = train_control,
+  tuneGrid = param_grid_eta,
+  metric = "RMSE"  # Use RMSE for evaluation
+)
+
+# Best eta after tuning
+print(xgb_tune_eta$bestTune)
+```
+ 
+```{r}
+# Visualize the results
+ggplot(xgb_tune_eta) +
+  theme_minimal() +
+  ggtitle("Tuning eta (Learning Rate) Hyperparameter") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+ 
+#### Tuning subsample Parameter
+
+```{r}
+# Tuning subsample Parameter
+
+# Define a range of values for subsample
+param_grid_subsample <- expand.grid(
+  nrounds = 100,           # Fixed nrounds
+  max_depth = 6,           # Fixed max_depth
+  eta = 0.1,               # Fixed eta
+  gamma = 0,               # Fixed gamma
+  colsample_bytree = 0.8,  # Fixed colsample_bytree
+  min_child_weight = 1,    # Fixed min_child_weight
+  subsample = c(0.7, 0.8, 0.9)  # Hyperparameter to tune
+)
+
+# Train the model with subsample tuning
+xgb_tune_subsample <- train(
+  ph ~ .,  # Target variable
+  data = train_df,  # Training data
+  method = "xgbTree",  # XGBoost model
+  trControl = train_control,
+  tuneGrid = param_grid_subsample,
+  metric = "RMSE"  # Use RMSE for evaluation
+)
+
+# Best subsample after tuning
+print(xgb_tune_subsample$bestTune)
+
+```
+
+ 
+```{r}
+
+# Visualize the results
+ggplot(xgb_tune_subsample) +
+  theme_minimal() +
+  ggtitle("Tuning subsample Hyperparameter") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Step 6: Stop the Parallel Cluster After Use
+
+# Stop the parallel cluster after training
+stopCluster(cl)
+
+```
+
+#### Performance metrics
+```{r}
+# Extract the performance metrics from the tuning results
+
+
+# For max_depth tuning results
+xgb_tune_max_depth_metrics <- xgb_tune_max_depth$results
+print(xgb_tune_max_depth_metrics)  # This will display all the metrics for max_depth tuning
+
+# RMSE and R-squared from max_depth tuning
+max_depth_rmse <- xgb_tune_max_depth_metrics$RMSE
+max_depth_r2 <- xgb_tune_max_depth_metrics$Rsquared
+
+# For eta tuning results
+xgb_tune_eta_metrics <- xgb_tune_eta$results
+print(xgb_tune_eta_metrics)  # This will display all the metrics for eta tuning
+
+# RMSE and R-squared from eta tuning
+eta_rmse <- xgb_tune_eta_metrics$RMSE
+eta_r2 <- xgb_tune_eta_metrics$Rsquared
+
+# For subsample tuning results
+xgb_tune_subsample_metrics <- xgb_tune_subsample$results
+print(xgb_tune_subsample_metrics)  # This will display all the metrics for subsample tuning
+
+# RMSE and R-squared from subsample tuning
+subsample_rmse <- xgb_tune_subsample_metrics$RMSE
+subsample_r2 <- xgb_tune_subsample_metrics$Rsquared
+
+# Print the best RMSE and R² values after tuning for each parameter
+cat("Max Depth Tuning - Best RMSE:", min(max_depth_rmse), "Best R-squared:", max(max_depth_r2), "\n")
+cat("Eta Tuning - Best RMSE:", min(eta_rmse), "Best R-squared:", max(eta_r2), "\n")
+cat("Subsample Tuning - Best RMSE:", min(subsample_rmse), "Best R-squared:", max(subsample_r2), "\n")
+
+```
+
+The tuning of the hyperparameters resulted in improvements across all parameters, with subsample tuning yielding the best performance, achieving a best RMSE of 0.1019 and R-squared of 0.649. Max Depth and Eta tuning also showed comparable results, with the best RMSE and R-squared values of 0.1039 and 0.6322, and 0.1044 and 0.6311, respectively. Overall, the model demonstrates a decent fit, explaining about 63% to 65% of the variance in the data, with room for further improvements in model generalization.
+
+
+#### XGboost perfomance on the evaluation data set or test set
+```{r }
+
+# Convert the test dataset (ph_test) to a matrix
+test_x <- as.matrix(ph_test %>% select(-ph))  # Exclude the target variable 'ph'
+test_y <- ph_test$ph  # Store the target variable for evaluation
+
+# Predict on the new test set
+predictions <- predict(xgb_model, newdata = test_x)
+
+# Manual RMSE calculation
+rmse_value <- sqrt(mean((test_y - predictions)^2))  # RMSE between actual and predicted values
+
+# Manual R-squared calculation
+rss <- sum((test_y - predictions)^2)  # Residual sum of squares
+tss <- sum((test_y - mean(test_y))^2)  # Total sum of squares
+r2_value <- 1 - (rss / tss)  # R-squared
+
+# Print the evaluation metrics
+cat("Test RMSE: ", rmse_value, "\n")
+cat("Test R-squared: ", r2_value, "\n")
+
+
+```
+
+
+```{r}
+# Get feature importance in the evaluation test
+importance <- xgb.importance(model = xgb_model)
+
+# View the importance of each feature
+print(importance)
+
+# Plot feature importance
+xgb.plot.importance(importance)
+
+```
+```{r}
+
+# Step 1: Convert the data to the DMatrix format (XGBoost's preferred format)
+train_x <- as.matrix(ph_train %>% select(-ph))  # Features (exclude target variable)
+train_y <- ph_train$ph  # Target variable
+test_x <- as.matrix(ph_test %>% select(-ph))    # Features of test data
+test_y <- ph_test$ph  # True values of test data
+
+# Convert to DMatrix format
+dtrain <- xgb.DMatrix(data = train_x, label = train_y)
+dtest <- xgb.DMatrix(data = test_x, label = test_y)
+
+# Step 2: Set up the hyperparameter grid
+xgb_grid <- expand.grid(
+  max_depth = c(3, 6, 9),
+  eta = c(0.01, 0.1, 0.2),
+  gamma = c(0, 0.1, 0.2),
+  colsample_bytree = c(0.7, 0.8, 0.9),
+  min_child_weight = c(1, 3, 5),
+  subsample = c(0.7, 0.8, 1)
+)
+
+# Step 3: Set up a custom cross-validation loop
+best_rmse <- Inf
+best_params <- NULL
+best_model <- NULL
+
+# Loop through the hyperparameter grid
+for (i in 1:nrow(xgb_grid)) {
+  params <- list(
+    objective = "reg:squarederror",  # Regression task
+    max_depth = xgb_grid$max_depth[i],
+    eta = xgb_grid$eta[i],
+    gamma = xgb_grid$gamma[i],
+    colsample_bytree = xgb_grid$colsample_bytree[i],
+    min_child_weight = xgb_grid$min_child_weight[i],
+    subsample = xgb_grid$subsample[i]
+  )
+  
+  # Cross-validation using xgb.cv
+  cv_results <- xgb.cv(
+    params = params,
+    data = dtrain,
+    nrounds = 100,  # Set the number of rounds for boosting
+    nfold = 5,      # 5-fold cross-validation
+    early_stopping_rounds = 10,  # Stop if no improvement after 10 rounds
+    metrics = "rmse",  # Metric to monitor
+    verbose = 0
+  )
+  
+  # Get the best RMSE from cross-validation
+  best_rmse_cv <- min(cv_results$evaluation_log$test_rmse_mean)
+  
+  # If this model's RMSE is better, update best_model and best_params
+  if (best_rmse_cv < best_rmse) {
+    best_rmse <- best_rmse_cv
+    best_params <- params
+    best_model <- cv_results  # Store the best model
+  }
+}
+
+```
+
+
+```{r}
+# Step 4: Train the final model with the best hyperparameters
+# Ensure 'objective' and 'nrounds' are NOT included in the 'params' list
+# Remove any conflicting parameters from the 'params' list.
+
+# If `objective` is in best_params, remove it.
+best_params <- best_params[!names(best_params) %in% c("objective", "nrounds")]
+
+# Now, train the model using the best_params (without redundant parameters)
+final_model <- xgboost(
+  data = dtrain,        # Feature matrix
+  label = train_y,      # Target variable
+  params = best_params, # Hyperparameters from the cross-validation loop (now without objective and nrounds)
+  nrounds = 100,        # Number of boosting rounds (this is outside params)
+  objective = "reg:squarederror" # Define objective for regression task (this is outside params)
+)
+
+# Step 5: Make Predictions on Test Data
+predictions <- predict(final_model, newdata = dtest)
+
+# Step 6: Evaluate Model Performance (RMSE and R-squared)
+rmse_value <- rmse(test_y, predictions)
+r2_value <- R2(test_y, predictions)
+
+# Print the evaluation metrics
+cat("Test RMSE: ", rmse_value, "\n")
+cat("Test R-squared: ", r2_value, "\n")
+
+```
+We observe a slight improvement in our model explanbility.
+We are opting to do some additional tuning to imporove the model
+
+
+#### Xgboost Performance on the evaluation set
+
+```{r}
+# Read the evalaution dataset
+
+test <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+
+```
+
+```{r}
+# Extract expected columns from the trained model (excluding the target variable 'PH')
+expected_columns <- colnames(xg_model$trainingData)[-1]
+
+# Perform one-hot encoding on the evaluation dataset and clean up the 'Brand.Code' column
+caret_test <- test %>%
+  mutate(
+    `Brand.Code.A` = ifelse(Brand.Code == "A", 1, 0),
+    `Brand.Code.B` = ifelse(Brand.Code == "B", 1, 0),
+    `Brand.Code.C` = ifelse(Brand.Code == "C", 1, 0),
+    `Brand.Code.D` = ifelse(Brand.Code == "D", 1, 0)
+  ) %>%
+  select(-Brand.Code)  
+
+missing_columns <- setdiff(expected_columns, colnames(caret_test))
+if (length(missing_columns) > 0) {
+  caret_test[missing_columns] <- 0  # Add missing columns filled with zeros
+}
+
+# Ensure column order matches the training data
+caret_test <- caret_test %>% select(all_of(expected_columns))
+```
+
+
+Since PH is missing in the test set, we cannot calculate performance metrics.
+But we can inspect the predictions and use them for further analysis or submission.
+
+```{r}
+# Make predictions using the trained XGBoost model
+cat("Making predictions...\n")
+predictions <- predict(xg_model, newdata = caret_test)
+
+predictions
+```
+
+
+
+```{r}
+# Prepare the evaluation test set (eval_test) by performing one-hot encoding
+eval_test <- test %>%
+  mutate(
+    `Brand.Code.B` = ifelse(Brand.Code == "B", 1, 0),
+    `Brand.Code.C` = ifelse(Brand.Code == "C", 1, 0),
+    `Brand.Code.D` = ifelse(Brand.Code == "D", 1, 0)
+  ) %>%
+  select(-Brand.Code)  # Drop the original Brand.Code column
+
+# Ensure the evaluation test set has the same columns as the training set
+test_columns <- colnames(eval_test)
+train_columns <- colnames(caret_train)[-which(names(caret_train) == "PH")]
+
+# Identify and add missing columns with zeros
+missing_columns <- setdiff(train_columns, test_columns)
+if (length(missing_columns) > 0) {
+  for (col in missing_columns) {
+    eval_test[[col]] <- 0
+  }
+}
+
+
+```
+
+
+
+
+
+
+
