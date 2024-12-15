@@ -17,6 +17,10 @@ set.seed(8675309)
 ```
 
 ```{r parallel, include=FALSE}
+#stopCluster(cl)
+```
+
+```{r parallel, include=FALSE}
 no_cores <- detectCores() - 1  
 cl <- makeCluster(no_cores)  
 registerDoParallel(cl)
@@ -147,4 +151,45 @@ ggplot(enet_model)
 ```{r performance enet}
 enet_model_pred <- predict(enet_model, newdata = caret_test)
 postResample(pred = enet_model_pred, obs = caret_test$PH)
+```
+
+## XGBoost
+
+```{r xgboost model, message=FALSE}
+xgboostGrid <- expand.grid(
+  nrounds = seq(300, 1000, by = 100) ,
+  eta = c(0.05, 0.1, 0.15),
+  max_depth = c(8, 9, 10),      
+  gamma = 0,
+  colsample_bytree = c(0.8),
+  min_child_weight = c(6),
+  subsample = c(0.9)
+)
+
+xg_control <- trainControl(method = "cv",
+                            number = 5,
+                            verboseIter = TRUE,
+                            returnData = FALSE,
+                            returnResamp = "all", 
+                            allowParallel = TRUE)
+
+xg_model <- train(
+  PH ~ .,
+  data = caret_train,
+  method = "xgbTree",
+  tuneGrid = xgboostGrid,
+  trControl = model_control, 
+  metric = "Rsquared"
+  )
+
+print(xg_model)
+```
+
+```{r plot enet}
+ggplot(xg_model)
+```
+
+```{r performance enet}
+xg_model_pred <- predict(xg_model, newdata = caret_test)
+postResample(pred = xg_model_pred, obs = caret_test$PH)
 ```
