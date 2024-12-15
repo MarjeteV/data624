@@ -1,3 +1,4 @@
+
 ---
 title: "Project 2_Data 624"
 author: "Heleine Fouda"
@@ -994,10 +995,5 @@ print(eval_predictions)
 write_xlsx(list("Predictions" = data.frame(Predictions = eval_predictions)), "Eval_predictions.xlsx")
 
 ```
-
-
-
-
-
 
 
