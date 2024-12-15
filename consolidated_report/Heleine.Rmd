@@ -1,1 +1,999 @@
 
+---
+title: "Project 2_Data 624"
+author: "Heleine Fouda"
+date: "2024-12-10"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    collapse: false
+    code_folding: hide
+    pdf_document:
+      toc: true
+  word_document:
+    toc: true
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+
+
+### Set up the environment: Load all necessary libraries and set the seed for reproducibility.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(caret)
+library(randomForest)
+library(xgboost)
+library(dplyr)
+library(readr)
+library(tidymodels)
+library(tidyverse)
+library(doParallel)
+library(mice)
+library(VIM)
+library(e1071)
+library(foreach)
+library(import)
+library(parallel)
+library(ggplot2)
+library(recipes)
+library(writexl)
+library(openxlsx)
+# Setting the seed for reproducibility
+set.seed(8675309)
+
+```
+
+## Data Preparation: Import and read the training and evaluation datasets into R
+```{r}
+
+train_raw <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/training%20data.csv")
+test_raw <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+
+# Quick overview of the datasets
+glimpse(train_raw)
+glimpse(test_raw)
+```
+
+
+### Exploratory Data Analysis (EDA)
+
+
+We will start by examining the raw datasets to understand the variables,
+their structure and their distribution using appropriate visualizations and summary statistics.
+
+```{r}
+##Summary and structure of the data
+summary(train_raw)
+summary(test_raw)
+```
+
+### View the first few rows of the data
+```{r}
+# View the first few rows of the data
+head(test_raw )
+```
+
+#### Visualize distributions of numerical variables
+```{r}
+train_raw %>%
+  keep(is.numeric) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value") %>%
+  ggplot(aes(x = Value)) +
+  geom_histogram(bins = 15, fill = "steelblue", color = "black", alpha = 0.7) +
+  facet_wrap(~Variable, scales = "free") +
+  labs(title = "Distribution of Numerical Variables", x = "Value", y = "Frequency") +
+  theme_minimal()
+```
+
+#### Check for missing values
+```{r}
+train_raw %>%
+  summarise_all(~mean(is.na(.))) %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Proportion_Missing") %>%
+  ggplot(aes(x = Variable, y = Proportion_Missing)) +
+  geom_col(fill = "red") +
+  labs(title = "Proportion of Missing Values", x = "Variable", y = "Proportion Missing") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Data Preprocessing
+#### One-hot encoding for `Brand.Code`
+```{r}
+train_encoded <- train_raw %>%
+  mutate(across(starts_with("Brand.Code"), ~ifelse(. == "B", 1, 0))) %>%
+  select(-Brand.Code)
+
+test_encoded <- test_raw %>%
+  mutate(across(starts_with("Brand.Code"), ~ifelse(. == "B", 1, 0))) %>%
+  select(-Brand.Code)
+```
+
+#### Impute missing values using predictive mean matching
+```{r}
+train_imputed <- mice(train_encoded, m = 1, method = 'pmm', print = FALSE) %>% complete()
+
+# Remove low-variance predictors
+train_clean <- train_imputed[, -nearZeroVar(train_imputed)]
+```
+
+### Final Preprocessing for Modeling - Standardize and clean datasets
+```{r}
+# Create preprocessing object for the training data
+preprocess <- preProcess(train_clean, method = c("corr", "nzv"))
+
+# Apply preprocessing to training data
+train_df <- predict(preprocess, newdata = train_clean) %>%
+  as_tibble() %>%
+  janitor::clean_names() %>%
+  relocate(ph, .before = everything())
+
+# Apply the same preprocessing object to the test data
+test_df <- predict(preprocess, newdata = test_encoded) %>%
+  as_tibble() %>%
+  janitor::clean_names()
+
+```
+
+
+#### Histogram of the target variable (PH)
+```{r}
+train_df %>%
+  ggplot(aes(x = ph)) +
+  geom_histogram(bins = 30, fill = "steelblue", color = "black", alpha = 0.7) +
+  labs(title = "Histogram of PH", x = "PH", y = "Frequency") +
+  theme_minimal()
+```
+
+#### Scatter plots of predictors vs target variable (PH)
+```{r}
+train_df %>%
+  pivot_longer(-ph, names_to = "Predictor", values_to = "Value") %>%
+  ggplot(aes(x = Value, y = ph)) +
+  geom_point(alpha = 0.7) +
+  facet_wrap(~Predictor, scales = "free") +
+  labs(title = "Scatter Plots of Predictors vs PH", x = "Predictor Value", y = "PH") +
+  theme_minimal()
+```
+
+**Key observations:**
+
+The *glimpse* function shows that the raw training dataset contains
+2,571 observations across 33 variables, including some categorical
+values and missing data (with the MFR variable having up to 212 NAs).
+The test/evaluation dataset has 267 observations with the same 33
+variables and also includes missing values.
+
+Summary statistics of both the training and the evaluation/test datasets
+confirm the presence of several missing values. The *summary* function
+also reveals that some variables exhibit outliers or unusual
+distributions. The train dataset for instance, contains several missing
+values, notably in variables like *Fill.Ounces*, *PC.Volume*, and
+*Mnf.Flow*, with the response variable *PH* entirely missing for all
+observations, requiring special attention. Most continuous variables,
+including *Carb.Volume*, *PC.Volume*, and *Fill.Ounces*, show consistent
+distributions with low variability, while *Carb.Pressure* and
+*Carb.Temp* exhibit some outliers, such as a max of 77.6 for
+*Carb.Pressure.* *Mnf.Flow* has an unusually wide range, indicating
+potential outliers or data errors. Explanatory variables like
+*Carb.Pressure1* and *Filler.Level* have stable distributions, though
+*MFR* shows higher variability and numerous missing values. The dataset
+also includes both categorical (e.g., Brand.Code) and continuous
+variables, necessitating further exploration for handling categorical
+data. Addressing these issues and handling the categorical variables
+appropriately will be essential before moving forward with modeling and
+analysis.
+
+### Preparing for modeling and analysis
+
+
+```{r}
+train <- train_encoded
+test <- test_encoded
+
+
+train <- mice(train, m = 1, method = 'pmm', print = FALSE) %>% complete()
+
+# filtering low frequencies
+train <- train[, -nearZeroVar(train)]
+```
+
+
+
+
+### Preparing for modeling and analysis
+
+In this phase our anlysis we have prepare the training and testing datasets for analysis by cleaning and standardizing the data. First, we converted both datasets to matrices and applied preprocessing to remove highly correlated features, eliminate low-variance variables, and, for the test data, impute missing values with the median. Afterward, we converted the datasets back into tables, reordered the training data to place the target variable `PH` first, and cleaned column names for consistency. These steps ensure the data is clean, organized, and ready for effective analysis or modeling.
+
+
+```{r counts of missing data}
+test <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+train <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/training%20data.csv")
+tidy_train <- train |> 
+  as_tibble()
+tidy_train |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(cols = everything(), names_to = "Column", values_to = "Missing Entries") |>
+  arrange(desc(`Missing Entries`))
+tidy_train |>
+  summarise(n = n())
+```
+
+
+```{r demonstrate brand values}
+tidy_train |>
+  count(Brand.Code)
+```
+
+```{r check for nzv}
+
+
+tidy_train |>
+  nearZeroVar(saveMetrics = TRUE) |>
+  dplyr::filter(zeroVar == TRUE | nzv == TRUE)
+
+```
+
+```{r classes of columns}
+sapply(tidy_train, class)
+```
+
+
+
+```{r validate imputation occured}
+# Verify no columns have missing data
+imputed_data |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(cols = everything(), names_to = "Column", values_to = "Missing Entries") |>
+  arrange(desc(`Missing Entries`))
+# Total number of rows after dropping those outlined earlier
+imputed_data |>
+  summarise(n = n())
+```
+
+```{r write imputed values}
+imputed_data |>
+  write_csv("imputed_test_data.csv")
+
+```
+
+
+## Random Forest Model
+Random Forest is a versatile machine learning ensemble algorithm that combines multiple independent decision trees to enhance predictive performance. Each tree operates on a subset of the data and features, ensuring diversity and reducing the risk of overfitting. Particularly well-suited for both regression and classification tasks, it will be employed in this project for regression. The algorithm offers automatic variable selection, effectively handles missing values, and leverages the collective predictions of its trees to improve stability and accuracy, making it a robust choice for this application.
+
+```{r message=FALSE}
+# Setting the seed for reproducibility
+set.seed(8675309)
+# Load the imputed training data
+imputed_data <- read_csv("imputed_test_data.csv")
+```
+
+```{r}
+# Split the data into training (75%) and testing (25%) sets, using PH as the target
+data_split <- createDataPartition(imputed_data$PH, p = 0.75, list = FALSE)
+training_data <- imputed_data[data_split, ]
+testing_data <- imputed_data[-data_split, ]
+
+```
+
+```{r}
+# Separate predictors and response variable for both training and testing sets
+train_x <- training_data %>% select(-PH)
+train_y <- training_data$PH
+test_x <- testing_data %>% select(-PH)
+test_y <- testing_data$PH
+
+```
+
+#### Fit a baseline Random Forest model
+
+We will start with a baseline model Random Forest using default hyperparameters. 
+
+```{r}
+# Fit a baseline Random Forest model
+rf_model_default <- randomForest(
+  x = train_x, 
+  y = train_y, 
+  ntree = 1000, 
+  importance = TRUE
+)
+pred_default <- predict(rf_model_default, test_x)
+rmse_default <- sqrt(mean((test_y - pred_default)^2))
+cat("Default RMSE:", rmse_default, "\n")
+
+```
+
+```{r}
+rf_model_default
+```
+Our initial Random Forest model generated an RMSE of 0.095 and an R-squared of 67.98%. 
+We will now try to optimize our model through hyperparameter tuning (mtry, nodesize, maxnodes).
+
+```{r}
+# Visualize predictions vs. actual values
+
+ggplot(data = data.frame(Actual = test_y, Predicted = pred_default), aes(x = Actual, y = Predicted)) +
+  geom_point(color = "blue") +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Predicted vs Actual Values (Baseline RF)",
+       x = "Actual Values",
+       y = "Predicted Values") +
+  theme_minimal()
+
+```
+
+
+#### Tune mtry
+
+```{r}
+# Tune mtry
+mtry_values <- seq(2, ncol(train_x), by = 2)
+mtry_results <- sapply(mtry_values, function(m) {
+  rf_model <- randomForest(x = train_x, y = train_y, ntree = 1000, mtry = m, importance = TRUE)
+  pred <- predict(rf_model, test_x)
+  sqrt(mean((test_y - pred)^2))
+})
+best_mtry <- mtry_values[which.min(mtry_results)]
+cat("Optimal mtry:", best_mtry, "\n")
+
+```
+
+#### Tune nodesize
+
+```{r}
+# Tune nodesize
+nodesize_values <- c(1, 5, 10, 20)
+nodesize_results <- sapply(nodesize_values, function(n) {
+  rf_model <- randomForest(x = train_x, y = train_y, ntree = 1000, mtry = best_mtry, nodesize = n, importance = TRUE)
+  pred <- predict(rf_model, test_x)
+  sqrt(mean((test_y - pred)^2))
+})
+best_nodesize <- nodesize_values[which.min(nodesize_results)]
+cat("Optimal nodesize:", best_nodesize, "\n")
+```
+
+#### Tune maxnodes
+
+```{r}
+# Tune maxnodes
+maxnodes_values <- seq(10, 50, by = 10)
+maxnodes_results <- sapply(maxnodes_values, function(mn) {
+  rf_model <- randomForest(x = train_x, y = train_y, ntree = 1000, mtry = best_mtry, nodesize = best_nodesize, maxnodes = mn, importance = TRUE)
+  pred <- predict(rf_model, test_x)
+  sqrt(mean((test_y - pred)^2))
+})
+best_maxnodes <- maxnodes_values[which.min(maxnodes_results)]
+cat("Optimal maxnodes:", best_maxnodes, "\n")
+
+```
+
+#### Fit the final optimized Random Forest model
+
+```{r}
+# Fit the final optimized Random Forest model
+rf_model_optimized <- randomForest(
+  x = train_x, 
+  y = train_y, 
+  ntree = 1000, 
+  mtry = best_mtry, 
+  nodesize = best_nodesize, 
+  maxnodes = best_maxnodes, 
+  importance = TRUE
+)
+pred_optimized <- predict(rf_model_optimized, test_x)
+rmse_optimized <- sqrt(mean((test_y - pred_optimized)^2))
+cat("Optimized RMSE:", rmse_optimized, "\n")
+
+```
+
+```{r}
+rf_model_optimized 
+```
+
+```{r}
+# Scatter Plot of optimized RF: Predicted vs. Actual Values
+
+ggplot(data = data.frame(Actual = test_y, Predicted = pred_optimized), aes(x = Actual, y = Predicted)) +
+  geom_point(color = "blue") +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Predicted vs Actual Values (Optimized RF)",
+       x = "Actual Values",
+       y = "Predicted Values") +
+  theme_minimal()
+
+```
+
+
+
+```{r}
+
+# Feature Importance Plot
+var_imp <- importance(rf_model_optimized)
+varImpPlot(rf_model_optimized, main = "Feature Importance (Optimized Random Forest)")
+
+```
+
+
+```{r}
+# Compare default and optimized results
+cat("Default RMSE:", rmse_default, "\n")
+cat("Optimized RMSE:", rmse_optimized, "\n")
+
+```
+Despite tuning for mtry, nodesize, and maxnodes, the optimized model explains less variance (58.34%)than the baseline model (67.98%). This could indicate overfitting during optimization or that the chosen hyperparameters were not optimal for the data.
+As a next step we will perform cross-validation to try and tune hyperparameters more effectively.
+
+#### Cross - validation
+
+```{r Cross-validation}
+# Ensure that the train_x is a data frame and train_y is a proper vector (not a list)
+train_x <- as.data.frame(train_x)
+test_x <- as.data.frame(test_x)
+
+train_y <- unlist(train_y)  # Convert to vector if it's wrapped in a list
+test_y <- unlist(test_y)    # Convert to vector for consistency
+
+
+# Ensure the outcome variable is numeric (for regression) or factor (for classification)
+if (!is.numeric(train_y) && !is.factor(train_y)) {
+  stop("train_y must be either numeric or a factor")
+}
+
+# Set up training control for cross-validation
+train_control <- trainControl(method = "cv", number = 5)
+
+# Define the grid for hyperparameters to tune (only mtry here)
+tune_grid <- expand.grid(
+  mtry = seq(2, ncol(train_x), by = 2)  # mtry values to test
+)
+
+# Train the Random Forest model using cross-validation for mtry
+rf_cv_model <- train(
+  x = train_x,
+  y = train_y,
+  method = "rf",
+  trControl = train_control,
+  tuneGrid = tune_grid,
+  ntree = 1000,  # Number of trees
+  importance = TRUE
+)
+
+# Print the best mtry from cross-validation
+cat("Optimal mtry:", rf_cv_model$bestTune$mtry, "\n")
+
+```
+```{r message=FALSE}
+# visualization
+# Make predictions on the test set 
+predictions <- predict(rf_cv_model, newdata = test_x)  
+
+# Create a data frame with actual and predicted values
+plot_data <- data.frame(
+  Actual = test_y,  
+  Predicted = predictions
+)
+
+
+ggplot(plot_data, aes(x = Actual, y = Predicted)) +
+  geom_point() +  # Scatter plot points
+  geom_smooth(method = "lm", color = "red") +  # Regression line
+  labs(title = "Pred vs Actual Values (rf_cv_model)",
+       x = "Actual Values", y = "Predicted Values") +
+  theme_minimal()
+
+```
+```{r}
+rf_cv_model
+```
+
+The cross-validated model (rf_cv_model) identified an optimal mtry = 34 based on minimizing RMSE (0.0989). This value is significantly higher than the mtry values in the baseline (11) and initially optimized models (20).
+Adddionally, the performance of the cross-validated model improves with increasing mtry until it stabilizes around mtry = 34, as evidenced by a near-plateau in RMSE values.
+
+
+
+```{r Cross-validated RMSE Profiles}
+# Cross-validated RMSE Profiles
+# Extract RMSE values and mtry from the cross-validation results
+cv_results <- rf_cv_model$results
+
+# Plot RMSE profile across different mtry values
+ggplot(cv_results, aes(x = mtry, y = RMSE)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "Cross-validated RMSE Profiles for Random Forest Model",
+    x = "mtry (Number of Variables Tried at Each Split)",
+    y = "Cross-validated RMSE"
+  ) +
+  theme_minimal()
+
+```
+
+#### Variable importance from the final model
+
+```{r}
+# Variable importance from the final model
+varImpPlot(rf_model_optimized, sort = TRUE, n.var = 10)
+
+```
+
+```{r}
+# Visualize variable importance
+importance_data <- as.data.frame(rf_model_optimized$importance)
+importance_data <- importance_data %>%
+  rownames_to_column(var = "Variable") %>%
+  arrange(desc(IncNodePurity)) %>%
+  slice_head(n = 10)
+
+ggplot(importance_data, aes(x = reorder(Variable, IncNodePurity), y = IncNodePurity)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Top10 Variables in Random Forest", x = "Variable", y = "Importance (IncNodePurity)") +
+  theme_minimal()
+```
+
+
+#### Predictions and performance on the evaluation dataset
+
+```{r message=FALSE}
+
+# Read the test data
+test <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+
+# Apply manual one-hot encoding to the Brand.Code variable
+eval_data <- test %>%
+  mutate(
+    `Brand.Code.B` = ifelse(Brand.Code == "B", 1, 0),
+    `Brand.Code.C` = ifelse(Brand.Code == "C", 1, 0),
+    `Brand.Code.D` = ifelse(Brand.Code == "D", 1, 0)
+  ) %>%
+  select(-Brand.Code)  # Drop the original Brand.Code column
+
+# Write the result to evaluation_data.csv
+write.csv(eval_data, "evaluation_data.csv", row.names = FALSE)
+eval_data <- read_csv("evaluation_data.csv")
+
+```
+
+```{r message=FALSE}
+# Predictions and performance on the evaluation dataset
+eval_data <- read_csv("evaluation_data.csv") # Load evaluation data
+
+# Ensure data types match between train_x and eval_data
+train_x[] <- lapply(train_x, function(x) if(is.integer(x)) as.double(x) else x)
+eval_data[] <- lapply(eval_data, function(x) if(is.integer(x)) as.double(x) else x)
+
+# Recipe for imputation
+recipe_obj <- recipe(~ ., data = train_x) %>%
+  step_impute_bag(all_predictors())
+recipe_prepped <- prep(recipe_obj)
+
+# Align eval_data with train_x
+missing_cols <- setdiff(names(train_x), names(eval_data))
+for (col in missing_cols) eval_data[[col]] <- NA
+eval_data_imputed <- bake(recipe_prepped, new_data = eval_data)
+
+```
+
+```{r}
+# Make predictions on evaluation dataset
+rf_eval_predictions <- predict(rf_model_optimized, newdata = eval_data_imputed)
+cat("Predictions on Evaluation Dataset:", rf_eval_predictions, "\n")
+
+```
+
+#### Convert predicted PH values to an excel format
+
+```{r}
+# Convert predictions to a data frame
+rf_predictions_df <- data.frame("Random Forest - Predicted PH" = rf_eval_predictions)
+
+# Write the data frame to an Excel file
+write_xlsx(rf_predictions_df, path = "Random_Forest_Predicted_PH.xlsx")
+
+cat("Predictions saved to 'Random_Forest_Predicted_PH Values.xlsx'.\n")
+
+```
+
+![Random Forest - Predicted
+PH](images/Random Forest_predicted PH values.png)
+
+## XGBoost Model
+
+XGBoost (Extreme Gradient Boosting) is a robust machine learning algorithm built on gradient boosting techniques, which combine gradient descent for numerical optimization with boosting, an ensemble method that iteratively improves weak learners to create strong models. The term "gradient" reflects the algorithm's use of derivatives from the loss function to optimize predictions. XGBoost operates through three main components: an additive model that sequentially builds improvements, a customizable differentiable loss function to measure prediction errors, and weak learners, typically decision trees, refined iteratively by addressing their shortcomings.XGBoost enhances flexibility and predictive performance by framing boosting as a numerical optimization problem, making it a favored tool in machine learning.
+
+```{r}
+# Prepare data for XGBoost
+xgb_train <- xgb.DMatrix(data = as.matrix(training_data[,-which(names(training_data) == "PH")]), 
+                         label = training_data$PH)
+xgb_test <- xgb.DMatrix(data = as.matrix(testing_data[,-which(names(testing_data) == "PH")]), 
+                        label = testing_data$PH)
+```
+
+```{r}
+# Fit XGBoost model
+xgb_model <- xgboost(data = xgb_train, nrounds = 500, objective = "reg:squarederror", verbose = 0)
+xgb_model
+```
+
+```{r}
+# Make predictions
+xgb_predictions <- predict(xgb_model, xgb_test)
+xgb_predictions
+```
+
+```{r}
+# Evaluate model performance
+xgb_performance <- postResample(pred = xgb_predictions, obs = testing_data$PH)
+print(xgb_performance)
+
+```
+
+#### Convert XGBoost prediction to an Excel format
+
+```{r}
+# Make predictions using your XGBoost model
+xgb_predictions_ph <- predict(xgb_model, xgb_test)
+
+# Convert predictions to a DataFrame
+df_predictions <- data.frame(Predicted_PH = xgb_predictions_ph)
+```
+
+
+```{r}
+# Save the predictions to an Excel file
+library(writexl)
+write_xlsx(df_predictions, path = "XGBoost_Predicted_PH.xlsx")  # Specify a valid file name
+
+cat("Predictions saved to XGBoost_Predicted_PH.xlsx\n")
+
+
+```
+
+#### Important variable
+
+```{r}
+# Get feature importance
+feature_importance <- xgb.importance(model = xgb_model, feature_names = colnames(training_data[,-which(names(training_data) == "PH")]))
+
+# Print the feature importance
+print(feature_importance)
+```
+
+```{r}
+# Extract the most important variable
+most_important_variable <- feature_importance$Feature[which.max(feature_importance$Gain)]
+cat("Most Important Variable:", most_important_variable, "\n")
+
+```
+
+```{r}
+# Visualize the top 10 variables in XGBoost
+# Compute feature importance
+feature_importance <- xgb.importance(model = xgb_model, feature_names = colnames(training_data[,-which(names(training_data) == "PH")]))
+
+# Select top 10 most important variables
+top_10_features <- head(feature_importance, 10)
+
+# Create a bar plot using ggplot2
+ggplot(top_10_features, aes(x = reorder(Feature, Gain), y = Gain)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Top 10 Variables in XGBoost Model",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  theme_minimal()
+
+```
+
+##### Comparing rf models on a table
+```{r}
+library(knitr)
+library(kableExtra)
+
+# Comparing rf models on a table
+model_comparison <- data.frame(
+  Model = c("Baseline Random Forest", "Manually Optimized Random Forest", "Cross-Validated Random Forest"),
+  Optimal_mtry = c(11, 20, 34),
+  Nodesize = c("Default", 1, "Default"),
+  Maxnodes = c("Default", 50, "Default"),
+  RMSE = c(0.0950, 0.1094, 0.0989),
+  Variance_Explained = c("67.98%", "58.34%", "68.09%")
+)
+
+# Create and format the table
+model_comparison %>%
+  kbl(caption = "Comparison of Random Forest Model Performance") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  column_spec(1, bold = TRUE) %>%
+  add_header_above(c("Model Type" = 1, "Hyperparameters" = 3, "Performance Metrics" = 2))
+
+```
+
+
+#### XGBoost Performance on the test/evaluation dataset
+
+We begin by loading the evaluation data
+
+```{r message=FALSE}
+# Load the evaluation data
+eval_data <- read_csv("evaluation_data.csv")  # Load evaluation data
+```
+
+
+```{r}
+
+# Set seed for reproducibility
+set.seed(8675309)
+
+# Split the data into training and testing sets
+data_split <- createDataPartition(imputed_data$PH, p = 0.75, list = FALSE)
+caret_train <- imputed_data[data_split, ]  # Training data
+caret_test <- imputed_data[-data_split, ]  # Testing data
+
+# Validate the dataset
+cat("Validating datasets...\n")
+if (any(is.na(caret_train)) || any(is.na(caret_test))) {
+  stop("Error: Missing values detected in the dataset.")
+}
+if (!is.numeric(caret_train$PH)) {
+  stop("Error: Target variable 'PH' is not numeric.")
+}
+cat("Datasets validated successfully.\n")
+
+# Ensure predictor variables are numeric
+cat("Converting predictors to numeric if needed...\n")
+caret_train <- caret_train %>% mutate(across(-PH, as.numeric))
+caret_test <- caret_test %>% mutate(across(-PH, as.numeric))
+cat("Predictor conversion complete.\n")
+
+# Define a simplified grid of hyperparameters for debugging
+xgboostGrid <- expand.grid(
+  nrounds = 500,
+  eta = 0.1,
+  max_depth = 6,
+  gamma = 0,
+  colsample_bytree = 0.8,
+  min_child_weight = 1,
+  subsample = 0.8
+)
+
+# Define training control
+xg_control <- trainControl(
+  method = "cv",
+  number = 3,  # Reduce folds for faster testing
+  verboseIter = TRUE,
+  returnData = TRUE,
+  returnResamp = "all",
+  allowParallel = FALSE  # Disable parallel processing for debugging
+)
+
+# Train the XGBoost model
+cat("Training XGBoost model...\n")
+xg_model <- tryCatch({
+  train(
+    PH ~ ., 
+    data = caret_train, 
+    method = "xgbTree",
+    tuneGrid = xgboostGrid,
+    trControl = xg_control,
+    metric = "Rsquared"
+  )
+}, error = function(e) {
+  cat("Error occurred during training:", conditionMessage(e), "\n")
+  NULL
+})
+
+# Check if training was successful
+if (!is.null(xg_model)) {
+  cat("Model trained successfully.\n")
+  print(xg_model)
+  
+  # Make predictions and evaluate
+  predictions <- predict(xg_model, newdata = caret_test)
+  cat("Predictions generated successfully.\n")
+  head(predictions)
+} else {
+  cat("Model training failed. Please inspect the data and parameters.\n")
+}
+
+
+```
+
+
+
+```{r}
+xg_model
+```
+
+Our initial XGBoost model (xg_model) trained on 1,837 samples with 35 predictors yielded an RMSE of 0.1049, an R² of 0.6315, and an MAE of 0.0775, indicating moderate predictive accuracy. The performance metrics suggest the model explains approximately 63% of the variance in the target variable, with relatively low error magnitudes. Hyperparameters such as nrounds and subsample were fixed, so further tuning might improve performance.
+
+
+```{r}
+# Make predictions on the test set
+predictions <- predict(xg_model, newdata = caret_test)
+predictions
+```
+```{r}
+# Calculate RMSE (Root Mean Square Error)
+actuals <- caret_test$PH
+rmse <- sqrt(mean((actuals - predictions)^2))
+cat("RMSE on test set:", rmse, "\n")
+```
+
+```{r}
+# Create a data frame with the predictions
+predictions_df <- data.frame(Predictions = predictions)
+
+# Save predictions to an Excel file
+write_xlsx(predictions_df, path = "predictions.xlsx")
+
+# Print confirmation message
+cat("Predictions have been saved to 'predictions.xlsx'.\n")
+
+```
+
+```{r}
+# Visualize predictions vs. actual values
+
+ggplot(data = data.frame(Actual = actuals, Predicted = predictions), aes(x = Actual, y = Predicted)) +
+  geom_point(color = "blue") +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(title = "Predicted vs Actual Values (XGBoost)", x = "Actual Values", y = "Predicted Values") +
+  theme_minimal()
+
+```
+
+#### Attempt to improve the model performance
+
+We will try to increase the R-Squared of our XGBoost model to at least 75%, focusing on optimizing the hyperparameters, and improving feature engineering.
+
+We start by applying an additional hyperparameter tuning using caret
+
+```{r}
+# Convert to DMatrix format
+train_data <- xgb.DMatrix(data = as.matrix(caret_train[, -which(names(caret_train) == "PH")]), label = caret_train$PH)
+test_data <- xgb.DMatrix(data = as.matrix(caret_test[, -which(names(caret_test) == "PH")]), label = caret_test$PH)
+
+# Define the parameter list for XGBoost
+param_list <- list(
+  booster = "gbtree",         # Use gradient boosting trees
+  eta = 0.05,                 # Learning rate
+  max_depth = 6,              # Maximum depth of trees
+  subsample = 0.9,            # Fraction of data used for each tree
+  colsample_bytree = 0.8,     # Fraction of features used for each tree
+  min_child_weight = 6,       # Minimum number of observations for a split
+  gamma = 0                   # Minimum loss reduction
+)
+
+# Train the XGBoost model with the defined parameters
+model <- xgb.train(
+  params = param_list,
+  data = train_data,
+  nrounds = 1000
+)
+
+# Make predictions using the trained model and iteration_range
+predictions <- predict(model, newdata = test_data, iteration_range = c(1, 500))
+
+# View the predictions
+head(predictions)
+
+```
+
+```{r}
+model 
+```
+
+We notice that the tuned XGBoost model has improved performance compared to the initial model. Specifically:
+
+RMSE for the tuned model is 0.0939, which is lower than the initial model's best RMSE of 0.0983 (at eta = 0.05, nrounds = 1000), indicating better prediction accuracy.
+MAE for the tuned model is 0.0706, which is slightly better than the initial model's best MAE of 0.0716, suggesting that the tuned model makes smaller average errors.
+R-squared for the tuned model is 0.6913, which is a noticeable improvement over the initial model's highest R-squared of 0.6785, demonstrating that the tuned model explains a greater proportion of the variance in the target variable.
+Overall, the tuned model has shown incremental improvements in all key metrics, particularly in R-squared, suggesting better overall model performance.
+
+#### XGBoost performance on the evaluation data set
+
+```{r}
+xg_model_pred <- predict(xg_model, newdata = caret_test)
+postResample(pred = xg_model_pred, obs = caret_test$PH)
+```
+
+
+#### Xgboost Performance on the evaluation set
+
+```{r}
+# Read the evalaution dataset
+cat("Loading the test dataset...\n")
+test <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+
+```
+
+```{r}
+# Extract expected columns from the trained model (excluding the target variable 'PH')
+expected_columns <- colnames(xg_model$trainingData)[-1]
+
+# Perform one-hot encoding on the evaluation dataset and clean up the 'Brand.Code' column
+caret_test <- test %>%
+  mutate(
+    `Brand.Code.A` = ifelse(Brand.Code == "A", 1, 0),
+    `Brand.Code.B` = ifelse(Brand.Code == "B", 1, 0),
+    `Brand.Code.C` = ifelse(Brand.Code == "C", 1, 0),
+    `Brand.Code.D` = ifelse(Brand.Code == "D", 1, 0)
+  ) %>%
+  select(-Brand.Code)  # Drop the original Brand.Code column
+
+# Identify missing columns in the evaluation set and add them with default value 0
+missing_columns <- setdiff(expected_columns, colnames(caret_test))
+if (length(missing_columns) > 0) {
+  caret_test[missing_columns] <- 0  # Add missing columns filled with zeros
+}
+
+# Ensure column order matches the training data
+caret_test <- caret_test %>% select(all_of(expected_columns))
+```
+
+
+Since PH is missing in the test set, we cannot calculate performance metrics.
+But we can inspect the predictions and use them for further analysis or submission.
+
+```{r}
+# Make predictions using the trained XGBoost model
+cat("Making predictions...\n")
+predictions <- predict(xg_model, newdata = caret_test)
+
+predictions
+```
+```{r}
+# Prepare the evaluation test set (eva_test) by performing one-hot encoding
+eval_test <- test %>%
+  mutate(
+    `Brand.Code.B` = ifelse(Brand.Code == "B", 1, 0),
+    `Brand.Code.C` = ifelse(Brand.Code == "C", 1, 0),
+    `Brand.Code.D` = ifelse(Brand.Code == "D", 1, 0)
+  ) %>%
+  select(-Brand.Code)  # Drop the original Brand.Code column
+
+# Ensure the evaluation test set has the same columns as the training set
+test_columns <- colnames(eval_test)
+train_columns <- colnames(caret_train)[-which(names(caret_train) == "PH")]
+
+# Identify and add missing columns with zeros
+missing_columns <- setdiff(train_columns, test_columns)
+if (length(missing_columns) > 0) {
+  for (col in missing_columns) {
+    eval_test[[col]] <- 0
+  }
+}
+
+# Ensure the column order matches the training data
+eval_test <- eval_test[, train_columns]
+
+```
+
+#### Predictions on the evaluation set
+```{r}
+
+# Make predictions on the evaluation test set (PH is missing in eval_test)
+cat("Making predictions on the evaluation test set...\n")
+eval_predictions <- predict(xg_model, newdata = eval_test)
+
+# Display predictions for the evaluation test set
+cat("Predictions for the evaluation test set:\n")
+print(eval_predictions)
+
+# Save predictions to an Excel file
+write_xlsx(list("Predictions" = data.frame(Predictions = eval_predictions)), "Eval_predictions.xlsx")
+
+```
+
+
