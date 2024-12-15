@@ -24,14 +24,11 @@ library(rpart)
 library(doParallel)
 ```
 
-Response Variable.: PH
 
 ```{r}
 imputed_data <- read_csv("imputed_test_data.csv", show_col_types = FALSE)
 
 ```
-
-
 ```{r}
 # Split
 train_index <- createDataPartition(imputed_data$PH, p = 0.75, list = FALSE)
@@ -39,6 +36,11 @@ train_data <- imputed_data[train_index, ]
 test_data <- imputed_data[-train_index, ]
 
 ```
+## PLS
+
+Predictive modeling with partial least squares (PLS) is an effective technique, especially with datasets containing multiple correlated predictor variables. As PLS can identify key relationships between predictors and outcomes, it is ideal for understanding how PH levels in production are determined. PLS performs well by extracting the most relevant variability from both predictors and the outcome,  and  PLS can handle high-dimensional data. However, challenges are associated with the PLS approach, such as interpretability in understanding its latent components. PLS assumes linear relationships and may overemphasize high-variance predictors, limiting its effectiveness with nonlinear interactions or less relevant variables.
+ 
+The PLS regression in this code uses cross-validation to minimize the Root Mean Squared Error of Prediction and determine the optimal number of components, evaluating up to 10 to balance flexibility and simplicity. The model achieved a Test RMSE of 0.141, an R² of 0.304, and a Test MAE of 0.111. While RMSE and MAE indicate reasonable predictions, the low R² value shows the model struggles to explain much of PH's variability, showing its limited predictive power.
 
 
 ```{r}
@@ -58,13 +60,12 @@ cat("Optimal Components:", optimal_components, "\n")
 cat("Test RMSE:", rmse, "\n")
 cat("Test R²:", r_squared, "\n")
 cat("Test MAE:", mae, "\n")
-#also ran the mode wil ncomp= 7 for simplicity and r^2 was smaller
-
 ```
+## CART
 
-
-
-CART: Regression: response variable is numerical and continuous.
+Classification And Regression Trees (CART) is a non-parametric decision tree algorithm. For regression, CART divides the data based on the values of specific input predictors to produce a continuous target variable. CART is a valuable tool for predicting PH in manufacturing because it can handle non-linear relationships and interactions between predictors. Other advantages include its interpretability, the tree structure makes it easy to understand and communicate results. It is robust to outliers and requires minimal preprocessing, as it does not depend on scaling or transformation of predictors. However, CART has limitations, as it tends to overfit with overly complex trees that capture noise, though pruning can reduce this at the risk of oversimplifying the model.  CART can be unstable, where small data changes cause big tree adjustments and may underperform compared to advanced methods like ensembles. Still, it remains a valuable tool when properly tuned and validated.
+ 
+The code uses the caret package to train an optimized CART model for predicting PH, leveraging parallel processing to improve efficiency. A tuning grid is defined for the complexity parameter (cp), ranging from 0.001 to 0.05, to identify the best pruning level. Five-fold cross-validation ensures the model is robust and avoids overfitting. The best cp value, 0.001, is selected based on cross-validation results, and the model's performance is evaluated on the test dataset using RMSE, R², and MAE. The results show a Test RMSE of 0.125, an R² of 0.483, and a Test MAE of 0.090, indicating the model explains only part of the variability in PH, highlighting some limitations despite effective tuning.
 
 ```{r}
 
@@ -106,9 +107,7 @@ cat("Optimized CART Test RMSE:", cart_rmse, "\n")
 cat("Optimized CART Test R²:", cart_r_squared, "\n")
 cat("Optimized CART Test MAE:", cart_mae, "\n")
 
-
 stopCluster(cl)
-
 
 #cp of 	0.001	is the minimal error
 ```
