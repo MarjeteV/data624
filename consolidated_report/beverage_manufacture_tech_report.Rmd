@@ -1,6 +1,6 @@
 ---
 title: "Final Project"
-author: "Matthew Tillmawitz, Heleine Fouda, Marjete Vucinaj, Lewris Mota, Kim "
+author: "Matthew Tillmawitz, Heleine Fouda, Marjete Vucinaj, Lewris Mota, Kim Koon "
 date: "2024-12-15"
 output:
   html_document:
@@ -286,6 +286,86 @@ svm_test_metrics |> kable(caption = "SVM Test Set Evaluation Metrics") |> kable_
 The SVM model demonstrates consistent performance between the training and test datasets, as indicated by the metrics from cross-validation and post-resample evaluation. The RMSE during training, (`r svmResults[,"RMSE"]`), is nearly identical to the test RMSE, (`r svmResults[,"RMSE"]`), suggesting stable predictive accuracy. Similarly, the MAE values are close, with (`r svmResults[,"MAE"]`) in training and (`r svmResults[,"MAE"]`) on the test set, reflecting consistent error magnitudes. The R-squared value shows a minor decrease from (`r svmResults[,"Rsquared"]`) in training to (`r svmResults[,"Rsquared"]`) on the test set, indicating that the model maintains reasonable explanatory power without significant overfitting. These results suggest that the model generalizes well and is reliable for making predictions on unseen data.
 
 Overall, the SVM model demonstrates moderate predictive performance, with consistent metrics across training and test datasets that highlight its robustness and reliability. While the RMSE and MAE values indicate good predictive accuracy, the R-squared suggests room for improvement in explaining the variance of the target variable. These results establish a solid benchmark for comparison with other models.
+
+```{r}
+imputed_data <- read_csv("imputed_test_data.csv", show_col_types = FALSE)
+
+```
+```{r}
+# Split
+train_index <- createDataPartition(imputed_data$PH, p = 0.75, list = FALSE)
+train_data <- imputed_data[train_index, ]
+test_data <- imputed_data[-train_index, ]
+
+```
+## PLS
+Predictive modeling with partial least squares (PLS) is an effective technique, especially with datasets containing multiple correlated predictor variables. As PLS can identify key relationships between predictors and outcomes, it is ideal for understanding how PH levels in production are determined. PLS performs well by extracting the most relevant variability from both predictors and the outcome,  and  PLS can handle high-dimensional data. However, challenges are associated with the PLS approach, such as interpretability in understanding its latent components. PLS assumes linear relationships and may overemphasize high-variance predictors, limiting its effectiveness with nonlinear interactions or less relevant variables.
+ 
+The PLS regression in this code uses cross-validation to minimize the Root Mean Squared Error of Prediction and determine the optimal number of components, evaluating up to 10 to balance flexibility and simplicity. The model achieved a Test RMSE of 0.141, an R² of 0.304, and a Test MAE of 0.111. While RMSE and MAE indicate reasonable predictions, the low R² value shows the model struggles to explain much of PH's variability, showing its limited predictive power.
+
+
+```{r}
+pls_model <- plsr(PH ~ ., data = train_data, ncomp = 10, validation = "CV")
+
+optimal_components <- which.min(RMSEP(pls_model)$val[1, , -1])
+
+pls_final_model <- plsr(PH ~ ., data = train_data, ncomp = optimal_components)
+
+# Predictions and performance evaluation
+predictions <- predict(pls_final_model, newdata = test_data, ncomp = optimal_components)
+rmse <- sqrt(mean((test_data$PH - predictions)^2))
+r_squared <- cor(test_data$PH, predictions)^2
+mae <- mean(abs(test_data$PH - predictions))
+
+cat("Optimal Components:", optimal_components, "\n")
+cat("Test RMSE:", rmse, "\n")
+cat("Test R²:", r_squared, "\n")
+cat("Test MAE:", mae, "\n")
+```
+## CART
+
+Classification And Regression Trees (CART) is a non-parametric decision tree algorithm. For regression, CART divides the data based on the values of specific input predictors to produce a continuous target variable. CART is a valuable tool for predicting PH in manufacturing because it can handle non-linear relationships and interactions between predictors. Other advantages include its interpretability, the tree structure makes it easy to understand and communicate results. It is robust to outliers and requires minimal preprocessing, as it does not depend on scaling or transformation of predictors. However, CART has limitations, as it tends to overfit with overly complex trees that capture noise, though pruning can reduce this at the risk of oversimplifying the model.  CART can be unstable, where small data changes cause big tree adjustments and may underperform compared to advanced methods like ensembles. Still, it remains a valuable tool when properly tuned and validated.
+ 
+The code uses the caret package to train an optimized CART model for predicting PH, leveraging parallel processing to improve efficiency. A tuning grid is defined for the complexity parameter (cp), ranging from 0.001 to 0.05, to identify the best pruning level. Five-fold cross-validation ensures the model is robust and avoids overfitting. The best cp value, 0.001, is selected based on cross-validation results, and the model's performance is evaluated on the test dataset using RMSE, R², and MAE. The results show a Test RMSE of 0.125, an R² of 0.483, and a Test MAE of 0.090, indicating the model explains only part of the variability in PH, highlighting some limitations despite effective tuning.
+
+```{r}
+#tuning grid
+tune_grid <- expand.grid(
+  cp = seq(0.001, 0.05, by = 0.005)  
+)
+
+optimized_train_control <- trainControl(
+  method = "cv",
+  number = 5,           
+  verboseIter = FALSE,  
+  allowParallel = TRUE
+)
+
+# Train  using caret
+optimized_cart_model <- train(
+  PH ~ ., 
+  data = train_data,
+  method = "rpart",
+  trControl = optimized_train_control, 
+  tuneGrid = tune_grid  
+)
+
+best_hyperparameters <- optimized_cart_model$bestTune
+cat("Best Hyperparameter (cp):\n")
+print(best_hyperparameters)
+
+final_predictions <- predict(optimized_cart_model, newdata = test_data)
+
+cart_rmse <- sqrt(mean((test_data$PH - final_predictions)^2))
+cart_r_squared <- cor(test_data$PH, final_predictions)^2
+cart_mae <- mean(abs(test_data$PH - final_predictions))
+
+cat("Optimized CART Test RMSE:", cart_rmse, "\n")
+cat("Optimized CART Test R²:", cart_r_squared, "\n")
+cat("Optimized CART Test MAE:", cart_mae, "\n")
+
+```
+
 
 ### 6. Model Selection
 
