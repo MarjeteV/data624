@@ -26,6 +26,10 @@ library(mice)
 library(fpp3)
 library(readxl)
 library(doParallel)
+library(naniar)
+library(VIM)
+library(magrittr)
+library(pls)
 
 set.seed(8675309)
 
@@ -33,7 +37,7 @@ set.seed(8675309)
 
 ```{r include=FALSE}
 # Register parallel backend
-cl <- makeCluster(detectCores() - 12)
+cl <- makeCluster(detectCores() - 1)
 
 registerDoParallel(cl)
 ```
@@ -124,6 +128,82 @@ The variables play a crucial role in capturing and monitoring various aspects of
 ### 3. Exploratory Data Analysis
 
 ### 4. Data Preparation
+
+```{r, include=FALSE}
+test <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/test%20data.csv")
+tidy_train <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/training%20data.csv") |>
+  as_tibble()
+```
+
+Before deciding how to handle missing values in our data we need to gain a better understanding of what data is missing. Looking at the columns with the most missing data in the figure below we can see there is an outlier in MFR, with roughly four times as many missing values as the next most missing variable. The majority of the remaining variables are missing in less than 2% of the observations, so we can be comfortable imputing values will not skew the results. It should be noted there are several observations with missing records for PH. As PH is the value we are attempting to predict, and the rows with missing PH values make up such a small proportion of the data we will be dropping these rows from our training set. The MFR column does not have enough missing values to justify excluding it from our modeling, so we will include it in our imputation. Before beginning to impute the missing values, we need to explore if there are patterns to the missingness.
+
+```{r percent missing, message=FALSE, warning=FALSE}
+miss_var_summary(tidy_train) |>
+  rename(`Missing Count` = n_miss, `Percent Missing` = pct_miss) |>
+  kable() |>
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F)
+```
+
+Before moving on, it should be noted that Brand.Code does have values which could be considered “missing” as seen in the table below. If we compare the number of observations with no brand code to the missing predictors above we can see it is actually the second most missing column. As Brand.Code can be converted to a factor and one hot encoded, we can treat the “missing” codes as another valid level. Doing so will allow some of our models to use any predictive power present in the missing values without hampering models that are unable to make use of missing values. We will therefore not be imputing values for the missing Brand.Codes.
+
+```{r demonstrate brand values, message=FALSE, warning=FALSE}
+tidy_train |>
+  count(Brand.Code) |>
+  arrange(desc(n))|> 
+  kable() |>
+  kable_styling(bootstrap_options = c("striped", "condensed"), full_width = F)
+```
+
+As a last check before imputing values, we need to examine whether there are any strong patterns in the missingness of our data. Looking at the frequency plot below we can see that while there is not a significant pattern to the missingness of most variables, Filler.Speed does appear to be missing with MFR frequently. This is not necessarily surprising however, as MFR is our most missing variable by far. It could be argued that the relatively high level of correlated missingness between the two variables justifies using an imputation technique that accounts for the correlated missingness such as Multivariate Imputations by Chained Equations (MICE). Referring back to our missing counts however, we can see that Filler.Speed only has 57 missing observations. Our correlation analysis indicates that less than half of these missing observations are also missing MFR. Given 30 of our predictors have any missing data, having one pair of predictors exhibiting an apparently significant correlation is still consistent with random missingness. As no other predictors exhibit a high level of correlated missingness we can conclude there is no relationship between missing values in predictors and, even if there were, using a method such as MICE would not provide meaningful value for such a small number of potentially correlated missing values.
+
+```{r check for patterns in missing data, message=FALSE, warning=FALSE}
+aggr_plot <- aggr(tidy_train, 
+                  col=c('navyblue','red'), 
+                  numbers=TRUE, 
+                  sortVars=TRUE, 
+                  labels=names(tidy_train), 
+                  cex.axis=.7, 
+                  gap=3, 
+                  ylab=c("Proportion Missing","Pattern"), 
+                  only.miss=TRUE, 
+                  sortCombs=TRUE,
+                  combined=TRUE)
+```
+
+Having determined what we will do with the special case variables of PH and Brand.Code, as well as determining there is not a significant level of correlated missingness in the remaining predictors, we can safely impute the remaining missing values. We will be using bootstrap aggregation (bagging) as our method of choice for imputing the missing values. We chose this method as it is able to make use of other predictors with missing values when imputing. Given the large proportion of predictors with any missing values this is a necessary trait and will result in better predictions.
+
+```{r impute training values, echo=TRUE, warning=FALSE}
+# Turn integer columns into numerics to prevent errors
+tidy_train %<>% mutate(across(
+  .cols = c('Filler.Speed', 'Hyd.Pressure4', 'Bowl.Setpoint', 'Carb.Flow'),
+  .fns = as.numeric
+  ))
+
+# Dropping rows with missing Brand.Code or PH
+imputation_set <- tidy_train |>
+  filter(!is.na(PH))
+
+# Create a one hot encoding tibble
+dummies <- dummyVars( ~ Brand.Code, data = imputation_set)
+one_hot_df <- predict(dummies, newdata = imputation_set) |>
+  as_tibble()
+
+# Add the one hot df to the original and remove the categorical column
+one_hot_df <- imputation_set |>
+  cbind(one_hot_df) |>
+  select(-Brand.Code)
+
+preprocessor <- preProcess(one_hot_df,
+                           method = "bagImpute",
+                           allowParallelUpdates = TRUE) 
+
+imputed_data <- predict(preprocessor, newdata = one_hot_df)
+```
+
+```{r write imputed values}
+imputed_data |>
+  write_csv("imputed_test_data.csv")
+```
 
 ### 5. Model Development {.tabset}
 
@@ -298,7 +378,7 @@ train_data <- imputed_data[train_index, ]
 test_data <- imputed_data[-train_index, ]
 
 ```
-## PLS
+#### PLS
 Predictive modeling with partial least squares (PLS) is an effective technique, especially with datasets containing multiple correlated predictor variables. As PLS can identify key relationships between predictors and outcomes, it is ideal for understanding how PH levels in production are determined. PLS performs well by extracting the most relevant variability from both predictors and the outcome,  and  PLS can handle high-dimensional data. However, challenges are associated with the PLS approach, such as interpretability in understanding its latent components. PLS assumes linear relationships and may overemphasize high-variance predictors, limiting its effectiveness with nonlinear interactions or less relevant variables.
  
 The PLS regression in this code uses cross-validation to minimize the Root Mean Squared Error of Prediction and determine the optimal number of components, evaluating up to 10 to balance flexibility and simplicity. The model achieved a Test RMSE of 0.141, an R² of 0.304, and a Test MAE of 0.111. While RMSE and MAE indicate reasonable predictions, the low R² value shows the model struggles to explain much of PH's variability, showing its limited predictive power.
@@ -322,7 +402,7 @@ cat("Test RMSE:", rmse, "\n")
 cat("Test R²:", r_squared, "\n")
 cat("Test MAE:", mae, "\n")
 ```
-## CART
+#### CART
 
 Classification And Regression Trees (CART) is a non-parametric decision tree algorithm. For regression, CART divides the data based on the values of specific input predictors to produce a continuous target variable. CART is a valuable tool for predicting PH in manufacturing because it can handle non-linear relationships and interactions between predictors. Other advantages include its interpretability, the tree structure makes it easy to understand and communicate results. It is robust to outliers and requires minimal preprocessing, as it does not depend on scaling or transformation of predictors. However, CART has limitations, as it tends to overfit with overly complex trees that capture noise, though pruning can reduce this at the risk of oversimplifying the model.  CART can be unstable, where small data changes cause big tree adjustments and may underperform compared to advanced methods like ensembles. Still, it remains a valuable tool when properly tuned and validated.
  
@@ -364,6 +444,143 @@ cat("Optimized CART Test RMSE:", cart_rmse, "\n")
 cat("Optimized CART Test R²:", cart_r_squared, "\n")
 cat("Optimized CART Test MAE:", cart_mae, "\n")
 
+```
+
+```{r read and split data, message=FALSE, echo=FALSE}
+imputed_training_set <- read_csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/imputed_test_data.csv")
+
+in_train <- createDataPartition(imputed_training_set$PH, p = 0.75, times = 1, list = FALSE)
+caret_train <- imputed_training_set[ in_train,]
+caret_test  <- imputed_training_set[-in_train,]
+```
+
+#### Cubist
+
+$RMSE = 0.09115836$
+$R^2 = 0.70848454$
+
+Cubist models are rules based models that make use of an amalgamation of other techniques, including boosting, linear model smoothing, and adjustments based on nearby data points. The model was generated using the tuning parameters as shown below.
+
+```{r cubist model, message=FALSE}
+cubist_grid <- expand.grid(committees = c(1, 10, 50, 100), neighbors = seq(0,9))
+model_control <- trainControl(method = "repeatedcv",
+                           number = 5,
+                           repeats = 5,
+                           allowParallel = TRUE)
+
+cubist_model <- train(
+  PH ~ .,
+  data = caret_train,
+  method = "cubist",
+  tuneGrid = cubist_grid,
+  trControl = model_control
+  )
+```
+
+Plotting the cubist model performance over our tuning parameters. We can see performance largely levels off beyond 5 instances, and there is no benefit beyond 50 committees. 
+
+```{r plot cubist}
+ggplot(cubist_model)
+```
+
+```{r performance cubist}
+cubist_model_pred <- predict(cubist_model, newdata = caret_test)
+postResample(pred = cubist_model_pred, obs = caret_test$PH)
+```
+
+The resulting model had an RMSE of 0.09115836 and an $R^2$ of 0.70848454. While one of the best models generated, we are deciding not to go with the Cubist as the XGBoost model had a similar level of performance. While the rules of the Cubist model give some insight into the decision making process of the model, there is no universally agreed upon method of determining predictor importance. Additionally, the use of committees and neighbor adjustments obfuscates the interpretability further. As the different methods of determining predictor importance can provide significantly different interpretations of the model, and the number of rules is extremely large, XGBoost stands as the more interpretable model. As they have very similar performance, interpretability is the deciding factor.
+
+#### Ridge
+
+$RMSE = 0.1293958$
+$R^2 = 0.4102869$
+
+Ridge regression models are an improvement upon PLS and deal with highly dimensional data as well as highly correlated data. They are also highly resilient to overfitting which can plague other models. As a linear model without feature selection it is highly interpretable, and generally provides a good baseline of performance. The  model was tuned using the code below.
+
+```{r ridge model, message=FALSE}
+ridgeGrid <- expand.grid(lambda = seq(0, 0.03, by = 0.005))
+
+ridge_model <- train(
+  PH ~ .,
+  data = caret_train,
+  method = "ridge",
+  preProcess = c("center", "scale", "corr"),
+  tuneGrid = ridgeGrid,
+  trControl = model_control
+  )
+```
+
+The resulting model performed best with a decay of 0.2 as seen in the plot below. The model had an RMSE of 0.1293958 and $R^2$ of 0.4102869 which, while respectable for a linear model, does not compete with the other models under consideration.
+
+```{r plot ridge}
+ggplot(ridge_model)
+```
+
+```{r performance ridge}
+ridge_model_pred <- predict(ridge_model, newdata = caret_test)
+postResample(pred = ridge_model_pred, obs = caret_test$PH)
+```
+
+#### LASSO
+
+$RMSE = 0.1266806$  
+$R^2 = 0.4346677$
+
+LASSO regression is an extension of Ridge Regression which, in addition to regularizing, conducts feature selection. The model was generated using the code below.
+
+```{r lasso model, message=FALSE}
+lassoGrid <- expand.grid(.fraction = seq(.05, 1, length = 20))
+
+lasso_model <- train(
+  PH ~ .,
+  data = caret_train,
+  method = "lasso",
+  preProcess = c("center", "scale"),
+  tuneGrid = lassoGrid,
+  trControl = model_control
+  )
+```
+
+The resulting model had performance largely level off with a regression coefficient of 0.75. The resulting model had an RMSE of 0.1266806 and an $R^2$ of 0.4346677 which is practically equivalent to the Ridge model
+
+```{r plot lasso}
+ggplot(lasso_model)
+```
+
+```{r performance lasso}
+lasso_model_pred <- predict(lasso_model, newdata = caret_test)
+postResample(pred = lasso_model_pred, obs = caret_test$PH)
+```
+
+#### ENET
+
+$RMSE = 0.1267312$  
+$R^2 = 0.4342081$
+
+Elastic Net models are a generalization of LASSO which makes use of multiple tuning parameters to get the benefits of the regularization of Ridge models with the feature selection of LASSO models. The model was tuned using the code below.
+
+```{r Elastic Net model, message=FALSE}
+enetGrid <- expand.grid(.lambda = c(0, 0.01, .1), .fraction = seq(.05, 1, length = 20))
+
+enet_model <- train(
+  PH ~ .,
+  data = caret_train,
+  method = "enet",
+  preProcess = c("center", "scale"),
+  tuneGrid = enetGrid,
+  trControl = model_control
+  )
+```
+
+The resulting model demonstrates that linear models are likely not the best solution to predicting this data, as model performance improved as more of the solution was added. The final model had an RMSE of 0.1267312 and 0.4342081 performing equivalently to the Ridge and LASSO models.
+
+```{r plot enet}
+ggplot(enet_model)
+```
+
+```{r performance enet}
+enet_model_pred <- predict(enet_model, newdata = caret_test)
+postResample(pred = enet_model_pred, obs = caret_test$PH)
 ```
 
 
