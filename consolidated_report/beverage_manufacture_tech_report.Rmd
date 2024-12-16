@@ -598,7 +598,7 @@ cubist_test_metrics |> kable(caption = "Cubist Test Set Evaluation Metrics") |> 
 ```
 
 
-The resulting model had an RMSE of 0.09115836 and an R2 of 0.70848454. While one of the best models generated, we are deciding not to go with the Cubist as the XGBoost model had a similar level of performance. While the rules of the Cubist model give some insight into the decision making process of the model, there is no universally agreed upon method of determining predictor importance. Additionally, the use of committees and neighbor adjustments obfuscates the interpretability further. As the different methods of determining predictor importance can provide significantly different interpretations of the model, and the number of rules is extremely large, XGBoost stands as the more interpretable model. As they have very similar performance, interpretability is the deciding factor.
+The resulting model had an RMSE of 0.09115836 and an $R^2$ of 0.70848454. While one of the best models generated, we are deciding not to go with the Cubist as the XGBoost model had a similar level of performance. While the rules of the Cubist model give some insight into the decision making process of the model, there is no universally agreed upon method of determining predictor importance. Additionally, the use of committees and neighbor adjustments obfuscates the interpretability further. As the different methods of determining predictor importance can provide significantly different interpretations of the model, and the number of rules is extremely large, XGBoost stands as the more interpretable model. As they have very similar performance, interpretability is the deciding factor.
 
 #### 5.5 Ridge
 
@@ -617,7 +617,7 @@ ridge_model <- train(
   )
 ```
 
-The resulting model performed best with a decay of 0.2 as seen in the plot below. The model had an RMSE of 0.1293958 and R2 of 0.4102869 which, while respectable for a linear model, does not compete with the other models under consideration.
+The resulting model performed best with a decay of 0.2 as seen in the plot below. The model had an RMSE of 0.1293958 and $R^2$ of 0.4102869 which, while respectable for a linear model, does not compete with the other models under consideration.
 
 
 ```{r}
@@ -667,7 +667,7 @@ lasso_model_res |> kable(caption = "Lasso Regression Training Set Evaluation Met
 ```
 
 
-The resulting model had performance largely level off with a regression coefficient of 0.75. The resulting model had an RMSE of 0.1266923 and an R2 of 0.4345533 on the test set which is practically equivalent to the Ridge model
+The resulting model had performance largely level off with a regression coefficient of 0.75. The resulting model had an RMSE of 0.1266923 and an $R^2$ of 0.4345533 on the test set which is practically equivalent to the Ridge model
 
 ```{r plot lasso}
 ggplot(lasso_model)
@@ -728,10 +728,9 @@ enet_test_metrics <- as.data.frame(t(enetPostS))
 enet_test_metrics |> kable(caption = "Elastic Net Test Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
 ```
 
-
 #### 5.8 Random Forest
 
-The optimal Random Forest model ended up having a slightly disappoint R2=0.6639744 on the training set, however when evaluated on the test set we saw an R2=0.7273597 and a decreased RMSE from 0.1018283 to 0.0891283. This is a particularly encouraging result as one of the dangers of Random Forest models is a propensity to overfit. Better performance on the test set than the training set indicates there is a low likelihood of overfitting and this model will likely generalize well.
+The optimal Random Forest model ended up having a slightly disappoint $R^2$=0.6639744 on the training set, however when evaluated on the test set we saw an $R^2$=0.7273597 and a decreased RMSE from 0.1018283 to 0.0891283. This is a particularly encouraging result as one of the dangers of Random Forest models is a propensity to overfit. Better performance on the test set than the training set indicates there is a low likelihood of overfitting and this model will likely generalize well.
 
 ```{r}
 set.seed(8675309)
@@ -805,6 +804,7 @@ rf_final_importance_df |> arrange(-Overall) %>% head(10) %>%
     y = "Variable"
   )  + theme_minimal()
 ```
+
 #### 5.9 XGBoost 
 
 XGBoost (Extreme Gradient Boosting) is a robust machine learning algorithm built on gradient boosting techniques, which combine gradient descent for numerical optimization with boosting, an ensemble method that iteratively improves weak learners to create strong models. The term "gradient" reflects the algorithm's use of derivatives from the loss function to optimize predictions. XGBoost operates through three main components: an additive model that sequentially builds improvements, a customizable differentiable loss function to measure prediction errors, and weak learners, typically decision trees, refined iteratively by addressing their shortcomings.XGBoost enhances flexibility and predictive performance by framing boosting as a numerical optimization problem, making it a favored tool in machine learning.
@@ -884,6 +884,7 @@ xgBoost_importance_df |> arrange(-Overall) %>% head(10) %>%
     y = "Variable"
   )  + theme_minimal()
 ```
+
 #### 5.9 Neural Networks
 
 The concept of Neural Networks is a node-layer system trained on an existing dataset. An artificial neural network (ANN) model contains an input layer, hidden layers, and an output layer, with each of these layers containing nodes.  At the input layer, each node contains a dimension of the dataset. At the outer layer, each node represents the final output or prediction.  The hidden layers are the core of the model, where the computation and learning take place.  Each node of a neural network in a hidden layer takes in a set of the input, performs a computation based on the activation function, and then creates an output.  These outputs are assigned weights which determine its level of consideration in the final output and are adjusted throughout the training process.  The model is trained over many cycles, called epochs.  At the end of each batch, a loss function is evaluated based on the model’s performance. Batches are subsets of the training dataset, and in the case of the nnet package in R, batch size is equal to the size of the dataset as a whole.  With supervised learning, the dataset will have various input parameters as well as a known output.  The loss function compares the model output with the known output.  Weights for each node are adjusted based on this loss function, and the model is said to converge when the loss function no longer decreases.  
@@ -909,7 +910,7 @@ x_test <- testData[, names(testData) != "PH"]
 y_test <- testData$PH
 ```
 
-Data was preprocessed with centering and scaling, and a linear activation function was used.  The model utilized cross validation, and 500 maximum iterations were specified in the tuning phase.  Since the nnet package defaults to a batch size equal to the training set size, the number of epochs is equal to the max number of iterations specified given that the model does not converge before the max iterations is reached.  For the tuning grid, we tested 1:35 nodes and weight decay regularization values of 0.01, 0.05, 0.1, 0.5, 1, and 2.  Using these parameters, we found a best tune model with 17 nodes and a decay value of 1.  This resulted in a test set RMSE of 0.113 and an R2 of 0.555.  
+Data was preprocessed with centering and scaling, and a linear activation function was used.  The model utilized cross validation, and 500 maximum iterations were specified in the tuning phase.  Since the nnet package defaults to a batch size equal to the training set size, the number of epochs is equal to the max number of iterations specified given that the model does not converge before the max iterations is reached.  For the tuning grid, we tested 1:35 nodes and weight decay regularization values of 0.01, 0.05, 0.1, 0.5, 1, and 2.  Using these parameters, we found a best tune model with 17 nodes and a decay value of 1.  This resulted in a test set RMSE of 0.113 and an $R^2$ of 0.555.  
 
 ```{r eval=FALSE, message=FALSE, warning=FALSE, eval=FALSE}
 # tuning grid
@@ -1020,7 +1021,7 @@ postResample(pred = avNNetPred, obs = y_test)
 0.1143450 0.5677752 0.0824541 
 </pre>
 
-However, after a best tune was determined, these best tuned parameters were used for a final model training that included a higher and higher numbers of maximum iterations until RMSE and R2 stabilized.  This final model used a maximum iteration of 5000 and had an RMSE of 0.109 and R2 of 0.603.  
+However, after a best tune was determined, these best tuned parameters were used for a final model training that included a higher and higher numbers of maximum iterations until RMSE and $R^2$ stabilized.  This final model used a maximum iteration of 5000 and had an RMSE of 0.109 and $R^2$ of 0.603.  
 
 ```{r message=FALSE, warning=FALSE,eval=FALSE}
 avNNetGrid_final <- expand.grid(
@@ -1071,13 +1072,13 @@ knitr::include_graphics("https://raw.githubusercontent.com/MarjeteV/data624/refs
 
 ### 6. Model Selection
 
-From the model summary table above, the best performing models were the XGBoost model and the Cross-Validated Random Forest model.  Both models had an R2 of approximately 0.72, and both models had an RMSE of 0.89 on the test set.  
+From the model summary table above, the best performing models were the XGBoost model and the Cross-Validated Random Forest model.  Both models had an $R^2$ of approximately 0.72, and both models had an RMSE of 0.89 on the test set.  
 
-Overall, the performance metrics for these two models were very similar, especially when looking at the test set evaluation.  As such, model selection took into account other selection criteria.  The Random Forest model has better interpretability, but XGBoost excels in other areas such as in its generalization - specifically, XGBoost has built in regularization techniques that can prevent overfitting to data.  When looking at the training R2 and RMSE, the RF model had a higher R2 at 0.66 and a lower RMSE at 0.10 compared to an R2 of 0.64 and an RMSE of 0.10 for the XGBoost model.  As such, it does not appear overfitting was an issue for either model given the higher R2 for the out-of-sample data.  
+Overall, the performance metrics for these two models were very similar, especially when looking at the test set evaluation.  As such, model selection took into account other selection criteria.  The Random Forest model has better interpretability, but XGBoost excels in other areas such as in its generalization - specifically, XGBoost has built in regularization techniques that can prevent overfitting to data.  When looking at the training $R^2$ and RMSE, the RF model had a higher $R^2$ at 0.66 and a lower RMSE at 0.10 compared to an $R^2$ of 0.64 and an RMSE of 0.10 for the XGBoost model.  As such, it does not appear overfitting was an issue for either model given the higher $R^2$ for the out-of-sample data.  
 
 When looking at variable importance, XGBoost model and Random Forest model show similar variables of importance, with 6 of the top 10 variables overlapping.  Both models also appear to have a similar distribution of importance among its top ten variables.  The importance of the Mnf Flow variable is greatest for both models, having an overall score of 100.  After the top variable, both models have a steep drop off in importance score for the remaining top variables.  
 
-The Random Forest model and the XGBoost model exhibited very similar performance metrics and variable importance distributions.  While XGBoost models are less prone to overfitting due to its built in regularization, comparing the in-sample R2 and RMSE to the out-of-sample R2 and RMSE show that neither models are overfitted.  As a result, the Random Forest model was chosen for its better interpretability.  
+The Random Forest model and the XGBoost model exhibited very similar performance metrics and variable importance distributions.  While XGBoost models are less prone to overfitting due to its built in regularization, comparing the in-sample $R^2$ and RMSE to the out-of-sample $R^2$ and RMSE show that neither models are overfitted.  As a result, the Random Forest model was chosen for its better interpretability.  
 
 
 ```{r}
