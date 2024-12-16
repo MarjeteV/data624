@@ -33,10 +33,15 @@ library(VIM)
 library(magrittr)
 library(pls)
 library(elasticnet)
-
-
+library(readxl)
+library(skimr)
 set.seed(8675309)
 
+bins_cal <- function(data){
+  num_bins <- nclass.FD(data)
+bin_width <- (max(data) - min(data)) / num_bins
+return(bin_width)
+}
 ```
 
 ```{r include=FALSE}
@@ -130,6 +135,48 @@ The variables play a crucial role in capturing and monitoring various aspects of
 -   **Process Control Variables**: Variables like `PSC CO2` and `PSC` act as setpoints to maintain optimal operational conditions, reducing variability and enhancing production reliability.
 
 ### 3. Exploratory Data Analysis
+
+```{r}
+beverage_manufacturing_data <- read_xlsx("StudentData.xlsx")
+colnames(beverage_manufacturing_data) <- gsub(" ", "_", colnames(beverage_manufacturing_data))
+
+skim(beverage_manufacturing_data) |> kable() |> kable_styling() |>  kable_classic() 
+```
+
+
+```{r}
+beverage_manufacturing_data |> ggplot() + 
+  geom_bar(aes(x = Brand_Code)) +
+  ggtitle("Distribution of the Brand Codes")
+```
+
+```{r message=FALSE, warning=FALSE}
+beverage_manufacturing_data %>%
+  keep(is.numeric) %>%
+  gather() %>%
+  ggplot(aes(value)) + 
+  geom_histogram(binwidth = bins_cal) + 
+  facet_wrap(~key, scales = "free") +
+  ggtitle("Histograms of Numerical Predictors")
+```
+
+```{r}
+beverage_manufacturing_data  |>
+  keep(is.numeric) |>
+  gather() |>
+  ggplot(aes(value)) + 
+  geom_boxplot(outlier.colour="red", outlier.shape=8,outlier.size=4) + 
+  facet_wrap(~key, scales = 'free',  ncol = 6) +
+  ggtitle("Boxplots of Numerical Predictors")
+```
+
+The dataset provides a detailed snapshot of variables that are predominantly numeric, along with a single character variable, Brand_Code. Most variables exhibit high levels of completeness, with many exceeding 98% complete. For instance, variables like Pressure_Vacuum and Air_Pressurer are fully complete, whereas MFR stands out with a lower completeness rate of 91.8%. The character variable Brand_Code is 95.3% complete, with four unique codes and no empty values. While the dataset overall shows high data quality, variables like MFR and Brand_Code might require imputation or exclusion if they are deemed critical for analysis.
+
+The numeric variables in the dataset reveal diverse distributions and variability. Some, such as Carb_Volume, Fill_Ounces, PSC, and Temperature, have tightly clustered values and small standard deviations, indicating consistent measurements. On the other hand, variables like Filler_Speed, MFR, and Carb_Flow show wide ranges and high variability, suggesting potential outliers. Distributions are also varied, with variables like PSC_Fill and Alch_Rel showing skewness, while Filler_Speed exhibits a peaked distribution with clustering near the upper bounds. This variability underscores the need for preprocessing steps such as normalization or transformations to handle skewness and outliers effectively.
+
+The target variable, PH, is highly complete (99.8%) with only four missing values. Its mean value of 8.55 and range of 7.88 to 9.36 suggest a well-behaved, normal-like distribution, making it suitable for regression or machine learning tasks. Pressure-related variables such as Carb_Pressure1, Fill_Pressure, and Pressure_Setpoint exhibit narrow standard deviations and consistent trends, making them promising predictors. However, some pressure variables, including Hyd_Pressure1 and Hyd_Pressure3, have negative or zero values that might indicate measurement errors or anomalies. Investigating and addressing these issues is critical to ensure the reliability of these predictors.
+
+Despite its overall robustness, the dataset does have potential challenges. Variables with extreme ranges, such as MFR, Carb_Flow, and Filler_Speed, may require additional preprocessing to minimize the influence of outliers. Additionally, the presence of negative values in pressure-related variables could require further investigation to determine whether they reflect true variability or data recording errors. Standardizing variables with wide ranges and handling missing or anomalous data points are essential steps before modeling.
 
 ### 4. Data Preparation
 
@@ -371,48 +418,75 @@ The SVM model demonstrates consistent performance between the training and test 
 
 Overall, the SVM model demonstrates moderate predictive performance, with consistent metrics across training and test datasets that highlight its robustness and reliability. While the RMSE and MAE values indicate good predictive accuracy, the R-squared suggests room for improvement in explaining the variance of the target variable. These results establish a solid benchmark for comparison with other models.
 
-```{r}
-imputed_data <- read_csv("imputed_test_data.csv", show_col_types = FALSE)
 
-```
-```{r}
-# Split
-train_index <- createDataPartition(imputed_data$PH, p = 0.75, list = FALSE)
-train_data <- imputed_data[train_index, ]
-test_data <- imputed_data[-train_index, ]
+#### 5.2 partial least squares (PLS)
 
-```
-#### PLS
 Predictive modeling with partial least squares (PLS) is an effective technique, especially with datasets containing multiple correlated predictor variables. As PLS can identify key relationships between predictors and outcomes, it is ideal for understanding how PH levels in production are determined. PLS performs well by extracting the most relevant variability from both predictors and the outcome,  and  PLS can handle high-dimensional data. However, challenges are associated with the PLS approach, such as interpretability in understanding its latent components. PLS assumes linear relationships and may overemphasize high-variance predictors, limiting its effectiveness with nonlinear interactions or less relevant variables.
  
 The PLS regression in this code uses cross-validation to minimize the Root Mean Squared Error of Prediction and determine the optimal number of components, evaluating up to 10 to balance flexibility and simplicity. The model achieved a Test RMSE of 0.141, an R² of 0.304, and a Test MAE of 0.111. While RMSE and MAE indicate reasonable predictions, the low R² value shows the model struggles to explain much of PH's variability, showing its limited predictive power.
 
 
-```{r}
-pls_model <- plsr(PH ~ ., data = train_data, ncomp = 10, validation = "CV")
+```{r , echo=FALSE, message=FALSE, warning=FALSE}
 
-optimal_components <- which.min(RMSEP(pls_model)$val[1, , -1])
-
-pls_final_model <- plsr(PH ~ ., data = train_data, ncomp = optimal_components)
-
-# Predictions and performance evaluation
-predictions <- predict(pls_final_model, newdata = test_data, ncomp = optimal_components)
-rmse <- sqrt(mean((test_data$PH - predictions)^2))
-r_squared <- cor(test_data$PH, predictions)^2
-mae <- mean(abs(test_data$PH - predictions))
-
-cat("Optimal Components:", optimal_components, "\n")
-cat("Test RMSE:", rmse, "\n")
-cat("Test R²:", r_squared, "\n")
-cat("Test MAE:", mae, "\n")
+in_train <- createDataPartition(imputed_data$PH, p = 0.75, times = 1, list = FALSE)
+caret_train <- imputed_data[ in_train,]
+caret_test  <- imputed_data[-in_train,]
 ```
-#### CART
+
+
+
+```{r pls model, message=FALSE}
+set.seed(8675309)
+
+model_control <- trainControl(method = "repeatedcv",
+                           number = 5,
+                           repeats = 5,
+                           allowParallel = TRUE)
+
+plsGrid <- expand.grid(ncomp = seq(1, 33, by = 1))
+
+pls_model <- train(
+  PH ~ .,
+  data = caret_train,
+  method = "pls",
+  tuneGrid = plsGrid,
+  preProcess = c("center", "scale", "nzv", "BoxCox"),
+  trControl = model_control
+  )
+```
+
+
+```{r plot}
+ggplot(pls_model)
+```
+
+```{r}
+plsNcomp <- pls_model$bestTune[1,"ncomp"]
+pls_model_res <- pls_model$results |> filter(ncomp == plsNcomp)
+pls_model_res |> kable(caption = "Partial Least Squares Training Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
+
+```{r }
+pls_model_pred <- predict(pls_model, newdata = caret_test)
+plsPostS <- postResample(pred = pls_model_pred, obs = caret_test$PH)
+```
+
+```{r}
+pls_test_metrics <- as.data.frame(t(plsPostS))
+
+pls_test_metrics |> kable(caption = "Partial Least Squares Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
+
+#### 5.3 Classification And Regression Trees (CART)
 
 Classification And Regression Trees (CART) is a non-parametric decision tree algorithm. For regression, CART divides the data based on the values of specific input predictors to produce a continuous target variable. CART is a valuable tool for predicting PH in manufacturing because it can handle non-linear relationships and interactions between predictors. Other advantages include its interpretability, the tree structure makes it easy to understand and communicate results. It is robust to outliers and requires minimal preprocessing, as it does not depend on scaling or transformation of predictors. However, CART has limitations, as it tends to overfit with overly complex trees that capture noise, though pruning can reduce this at the risk of oversimplifying the model.  CART can be unstable, where small data changes cause big tree adjustments and may underperform compared to advanced methods like ensembles. Still, it remains a valuable tool when properly tuned and validated.
  
-The code uses the caret package to train an optimized CART model for predicting PH, leveraging parallel processing to improve efficiency. A tuning grid is defined for the complexity parameter (cp), ranging from 0.001 to 0.05, to identify the best pruning level. Five-fold cross-validation ensures the model is robust and avoids overfitting. The best cp value, 0.001, is selected based on cross-validation results, and the model's performance is evaluated on the test dataset using RMSE, R², and MAE. The results show a Test RMSE of 0.125, an R² of 0.483, and a Test MAE of 0.090, indicating the model explains only part of the variability in PH, highlighting some limitations despite effective tuning.
 
 ```{r}
+set.seed(8675309)
+
 #tuning grid
 tune_grid <- expand.grid(
   cp = seq(0.001, 0.05, by = 0.005)  
@@ -428,44 +502,54 @@ optimized_train_control <- trainControl(
 # Train  using caret
 optimized_cart_model <- train(
   PH ~ ., 
-  data = train_data,
+  data = caret_train,
   method = "rpart",
   trControl = optimized_train_control, 
   tuneGrid = tune_grid  
 )
 
-best_hyperparameters <- optimized_cart_model$bestTune
-cat("Best Hyperparameter (cp):\n")
-print(best_hyperparameters)
-
-final_predictions <- predict(optimized_cart_model, newdata = test_data)
-
-cart_rmse <- sqrt(mean((test_data$PH - final_predictions)^2))
-cart_r_squared <- cor(test_data$PH, final_predictions)^2
-cart_mae <- mean(abs(test_data$PH - final_predictions))
-
-cat("Optimized CART Test RMSE:", cart_rmse, "\n")
-cat("Optimized CART Test R²:", cart_r_squared, "\n")
-cat("Optimized CART Test MAE:", cart_mae, "\n")
-
 ```
 
-```{r read and split data, message=FALSE, echo=FALSE}
-imputed_training_set <- read_csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/imputed_test_data.csv")
-
-in_train <- createDataPartition(imputed_training_set$PH, p = 0.75, times = 1, list = FALSE)
-caret_train <- imputed_training_set[ in_train,]
-caret_test  <- imputed_training_set[-in_train,]
+```{r}
+plot(optimized_cart_model)
+```
+```{r}
+cartCPVal <- optimized_cart_model$bestTune[1,"cp"]
+cart_model_res <- optimized_cart_model$results |> filter(cp == cartCPVal)
+cart_model_res |> kable(caption = "Cart Training Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
 ```
 
-#### Cubist
 
-$RMSE = 0.09115836$
-$R^2 = 0.70848454$
+```{r performance }
+cart_model_pred <- predict(optimized_cart_model, newdata = caret_test)
+cartPostS <- postResample(pred = cart_model_pred, obs = caret_test$PH)
+```
+
+```{r}
+cart_test_metrics <- as.data.frame(t(cartPostS))
+cart_test_metrics |> kable(caption = "Cart Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
+
+The code uses the caret package to train an optimized CART model for predicting PH, leveraging parallel processing to improve efficiency. A tuning grid is defined for the complexity parameter (cp), ranging from 0.001 to 0.05, to identify the best pruning level. Five-fold cross-validation ensures the model is robust and avoids overfitting. The best cp value, 0.001, is selected based on cross-validation results, and the model's performance is evaluated on the test dataset using RMSE, R², and MAE. The results show a Test RMSE of 0.125, an R² of 0.483, and a Test MAE of 0.090, indicating the model explains only part of the variability in PH, highlighting some limitations despite effective tuning.
+
+#### 5.4 Cubist
 
 Cubist models are rules based models that make use of an amalgamation of other techniques, including boosting, linear model smoothing, and adjustments based on nearby data points. The model was generated using the tuning parameters as shown below.
 
-```{r cubist model, message=FALSE}
+```{r , echo=FALSE, message=FALSE, warning=FALSE}
+set.seed(8675309)
+
+in_train <- createDataPartition(imputed_data$PH, p = 0.75, times = 1, list = FALSE)
+caret_train <- imputed_data[ in_train,]
+caret_test  <- imputed_data[-in_train,]
+```
+
+
+```{r message=FALSE}
+
+set.seed(8675309)
+
 cubist_grid <- expand.grid(committees = c(1, 10, 50, 100), neighbors = seq(0,9))
 model_control <- trainControl(method = "repeatedcv",
                            number = 5,
@@ -487,17 +571,31 @@ Plotting the cubist model performance over our tuning parameters. We can see per
 ggplot(cubist_model)
 ```
 
-```{r performance cubist}
-cubist_model_pred <- predict(cubist_model, newdata = caret_test)
-postResample(pred = cubist_model_pred, obs = caret_test$PH)
+```{r}
+
+committeesV <- cubist_model$bestTune[1,"committees"]
+neighborsV <- cubist_model$bestTune[1,"neighbors"]
+
+cubist_model_res <- cubist_model$results |> filter(committees == committeesV & neighbors==neighborsV)
+cubist_model_res |> kable(caption = "Cubist Training Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
 ```
 
-The resulting model had an RMSE of 0.09115836 and an $R^2$ of 0.70848454. While one of the best models generated, we are deciding not to go with the Cubist as the XGBoost model had a similar level of performance. While the rules of the Cubist model give some insight into the decision making process of the model, there is no universally agreed upon method of determining predictor importance. Additionally, the use of committees and neighbor adjustments obfuscates the interpretability further. As the different methods of determining predictor importance can provide significantly different interpretations of the model, and the number of rules is extremely large, XGBoost stands as the more interpretable model. As they have very similar performance, interpretability is the deciding factor.
 
-#### Ridge
+```{r }
+cubist_model_pred <- predict(cubist_model, newdata = caret_test)
+cubistPostS <- postResample(pred = cubist_model_pred, obs = caret_test$PH)
+```
 
-$RMSE = 0.1293958$
-$R^2 = 0.4102869$
+```{r}
+cubist_test_metrics <- as.data.frame(t(cubistPostS))
+
+cubist_test_metrics |> kable(caption = "Cubist Test Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
+
+The resulting model had an RMSE of 0.09115836 and an R2 of 0.70848454. While one of the best models generated, we are deciding not to go with the Cubist as the XGBoost model had a similar level of performance. While the rules of the Cubist model give some insight into the decision making process of the model, there is no universally agreed upon method of determining predictor importance. Additionally, the use of committees and neighbor adjustments obfuscates the interpretability further. As the different methods of determining predictor importance can provide significantly different interpretations of the model, and the number of rules is extremely large, XGBoost stands as the more interpretable model. As they have very similar performance, interpretability is the deciding factor.
+
+#### 5.5 Ridge
 
 Ridge regression models are an improvement upon PLS and deal with highly dimensional data as well as highly correlated data. They are also highly resilient to overfitting which can plague other models. As a linear model without feature selection it is highly interpretable, and generally provides a good baseline of performance. The  model was tuned using the code below.
 
@@ -514,7 +612,15 @@ ridge_model <- train(
   )
 ```
 
-The resulting model performed best with a decay of 0.2 as seen in the plot below. The model had an RMSE of 0.1293958 and $R^2$ of 0.4102869 which, while respectable for a linear model, does not compete with the other models under consideration.
+The resulting model performed best with a decay of 0.2 as seen in the plot below. The model had an RMSE of 0.1293958 and R2 of 0.4102869 which, while respectable for a linear model, does not compete with the other models under consideration.
+
+
+```{r}
+riddeLambdaV <- ridge_model$bestTune[1,"lambda"]
+ridge_model_res <- ridge_model$results |> filter(lambda == riddeLambdaV)
+ridge_model_res |> kable(caption = "Ridge Training Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
 
 ```{r plot ridge}
 ggplot(ridge_model)
@@ -522,13 +628,17 @@ ggplot(ridge_model)
 
 ```{r performance ridge}
 ridge_model_pred <- predict(ridge_model, newdata = caret_test)
-postResample(pred = ridge_model_pred, obs = caret_test$PH)
+ridgePost <- postResample(pred = ridge_model_pred, obs = caret_test$PH)
 ```
 
-#### LASSO
 
-$RMSE = 0.1266806$  
-$R^2 = 0.4346677$
+```{r}
+ridge_test_metrics <- as.data.frame(t(ridgePost))
+
+ridge_test_metrics |> kable(caption = "Ridge Test Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
+#### 5.6 LASSO Regression
 
 LASSO regression is an extension of Ridge Regression which, in addition to regularizing, conducts feature selection. The model was generated using the code below.
 
@@ -545,7 +655,14 @@ lasso_model <- train(
   )
 ```
 
-The resulting model had performance largely level off with a regression coefficient of 0.75. The resulting model had an RMSE of 0.1266806 and an $R^2$ of 0.4346677 which is practically equivalent to the Ridge model
+```{r}
+fractionLassoV <- lasso_model$bestTune[1,"fraction"]
+lasso_model_res <- lasso_model$results |> filter(fraction == fractionLassoV)
+lasso_model_res |> kable(caption = "Lasso Regression Training Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
+
+The resulting model had performance largely level off with a regression coefficient of 0.75. The resulting model had an RMSE of 0.1266806 and an R2 of 0.4346677 which is practically equivalent to the Ridge model
 
 ```{r plot lasso}
 ggplot(lasso_model)
@@ -553,17 +670,23 @@ ggplot(lasso_model)
 
 ```{r performance lasso}
 lasso_model_pred <- predict(lasso_model, newdata = caret_test)
-postResample(pred = lasso_model_pred, obs = caret_test$PH)
+lassoPostS <- postResample(pred = lasso_model_pred, obs = caret_test$PH)
 ```
 
-#### ENET
 
-$RMSE = 0.1267312$  
-$R^2 = 0.4342081$
+```{r}
+lasso_test_metrics <- as.data.frame(t(lassoPostS))
+lasso_test_metrics |> kable(caption = "Lasso Regression Test Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
+
+#### 5.7 Elastic Net (ENET)
 
 Elastic Net models are a generalization of LASSO which makes use of multiple tuning parameters to get the benefits of the regularization of Ridge models with the feature selection of LASSO models. The model was tuned using the code below.
 
 ```{r Elastic Net model, message=FALSE}
+set.seed(8675309)
+
 enetGrid <- expand.grid(.lambda = c(0, 0.01, .1), .fraction = seq(.05, 1, length = 20))
 
 enet_model <- train(
@@ -576,6 +699,14 @@ enet_model <- train(
   )
 ```
 
+```{r}
+fractionEnentV <- enet_model$bestTune[1,"fraction"]
+enetLambdaV <- enet_model$bestTune[1,"lambda"]
+
+enet_model_res <- enet_model$results |> filter(fraction == fractionEnentV & lambda == enetLambdaV)
+enet_model_res |> kable(caption = "Elastic Net Training Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
 The resulting model demonstrates that linear models are likely not the best solution to predicting this data, as model performance improved as more of the solution was added. The final model had an RMSE of 0.1267312 and 0.4342081 performing equivalently to the Ridge and LASSO models.
 
 ```{r plot enet}
@@ -584,10 +715,147 @@ ggplot(enet_model)
 
 ```{r performance enet}
 enet_model_pred <- predict(enet_model, newdata = caret_test)
-postResample(pred = enet_model_pred, obs = caret_test$PH)
+enetPostS <- postResample(pred = enet_model_pred, obs = caret_test$PH)
 ```
 
-#### Neural Networks
+```{r}
+enet_test_metrics <- as.data.frame(t(enetPostS))
+enet_test_metrics |> kable(caption = "Elastic Net Test Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
+
+#### 5.8 Random Forest
+
+```{r}
+set.seed(8675309)
+
+data_split <- createDataPartition(imputed_data$PH, p = 0.75, list = FALSE)
+training_data <- imputed_data[data_split, ]
+testing_data <- imputed_data[-data_split, ]
+
+
+# Separate predictors and response variable for both training and testing sets
+train_x <- training_data %>% select(-PH)
+train_y <- training_data$PH
+test_x <- testing_data %>% select(-PH)
+test_y <- testing_data$PH
+```
+
+
+```{r}
+set.seed(8675309)
+
+train_control <- trainControl(method = "cv", number = 5)
+# Define the grid for hyperparameters to tune (only mtry here)
+tune_grid <- expand.grid(
+  mtry = 34)  # mtry values to test
+
+
+# Train the Random Forest model using cross-validation for mtry
+rf_cv_model <- train(
+  x = train_x,
+  y = train_y,
+  method = "rf",
+  trControl = train_control,
+  tuneGrid = tune_grid,
+  ntree =  1000,  # Number of trees
+  importance = TRUE
+)
+
+```
+
+
+
+```{r}
+
+rfMtryV <- rf_cv_model$bestTune[1,"mtry"]
+
+rf_model_res <- rf_cv_model$results |> filter(mtry == rfMtryV)
+rf_model_res |> kable(caption = "Random Forest Training Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
+
+
+```{r}
+rf_cv_model_pred <- predict(rf_cv_model, newdata = test_x)
+randomForestPost <- postResample(pred = rf_cv_model_pred, obs = test_y)
+```
+
+
+```{r}
+rf_test_metrics <- as.data.frame(t(randomForestPost))
+rf_test_metrics |> kable(caption = "Random Forest Test Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
+
+#### 5.9 XGBoost 
+
+XGBoost (Extreme Gradient Boosting) is a robust machine learning algorithm built on gradient boosting techniques, which combine gradient descent for numerical optimization with boosting, an ensemble method that iteratively improves weak learners to create strong models. The term "gradient" reflects the algorithm's use of derivatives from the loss function to optimize predictions. XGBoost operates through three main components: an additive model that sequentially builds improvements, a customizable differentiable loss function to measure prediction errors, and weak learners, typically decision trees, refined iteratively by addressing their shortcomings.XGBoost enhances flexibility and predictive performance by framing boosting as a numerical optimization problem, making it a favored tool in machine learning.
+
+```{r}
+set.seed(8675309)
+
+data_split <- createDataPartition(manufacturing_tr$PH, p = 0.75, list = FALSE)
+training_data <- imputed_data[data_split, ]
+testing_data <- imputed_data[-data_split, ]
+ 
+```
+
+
+```{r}
+
+
+set.seed(8675309)
+
+# Define trainControl for cross-validation
+train_control <- trainControl(
+  method = "cv",                # Cross-validation
+  number = 5,                   # Number of folds
+  verboseIter = F            # Show training progress
+)
+
+# Define a grid for hyperparameter tuning
+xgb_grid <- expand.grid(
+  nrounds = 1000,               # Number of boosting rounds
+  max_depth = 6,                # Maximum tree depth
+  eta = 0.05,                   # Learning rate
+  gamma = 0,                    # Minimum loss reduction
+  colsample_bytree = 0.8,       # Fraction of features used for each tree
+  min_child_weight = 6,         # Minimum number of observations for a split
+  subsample = 0.9               # Fraction of data used for each tree
+)
+
+# Train the XGBoost model using caret
+xgb_model <- train(
+  PH ~ .,                       # Formula (PH is the target variable)
+  data = training_data,         # Training dataset
+  method = "xgbTree",           # Use XGBoost
+  trControl = train_control,    # Cross-validation control
+  tuneGrid = xgb_grid,          # Hyperparameter grid
+  metric = "RMSE"               # Optimize for RMSE
+)
+
+```
+
+
+```{r}
+xgb_model$results |> kable(caption = " XGBoost Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
+
+```{r}
+
+# Make predictions using the trained model and iteration_range
+model_pred <- predict(xgb_model, newdata = testing_data)
+xgBoostPostS <- postResample(pred = model_pred, obs = testing_data$PH)
+```
+
+```{r}
+xgBoos_test_metrics <- as.data.frame(t(xgBoostPostS))
+xgBoos_test_metrics |> kable(caption = "XGBoost Test Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
+```
+
+#### 5.9 Neural Networks
 
 The concept of Neural Networks is a node-layer system trained on an existing dataset. An artificial neural network (ANN) model contains an input layer, hidden layers, and an output layer, with each of these layers containing nodes.  At the input layer, each node contains a dimension of the dataset. At the outer layer, each node represents the final output or prediction.  The hidden layers are the core of the model, where the computation and learning take place.  Each node of a neural network in a hidden layer takes in a set of the input, performs a computation based on the activation function, and then creates an output.  These outputs are assigned weights which determine its level of consideration in the final output and are adjusted throughout the training process.  The model is trained over many cycles, called epochs.  At the end of each batch, a loss function is evaluated based on the model’s performance. Batches are subsets of the training dataset, and in the case of the nnet package in R, batch size is equal to the size of the dataset as a whole.  With supervised learning, the dataset will have various input parameters as well as a known output.  The loss function compares the model output with the known output.  Weights for each node are adjusted based on this loss function, and the model is said to converge when the loss function no longer decreases.  
 
@@ -599,9 +867,7 @@ The nnet method (nnet) in the nnet package was used with caret to tune an ANN mo
 StudentData <- read.csv("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/imputed_test_data.csv")
 
 # Parallel processing
-cores <- detectCores()
-cl <- makeCluster(cores)
-registerDoParallel(cl)
+
 
 set.seed(8675309)
 trainIndex <- createDataPartition(StudentData$PH, p = 0.75, list = FALSE)
@@ -616,7 +882,7 @@ y_test <- testData$PH
 
 Data was preprocessed with centering and scaling, and a linear activation function was used.  The model utilized cross validation, and 500 maximum iterations were specified in the tuning phase.  Since the nnet package defaults to a batch size equal to the training set size, the number of epochs is equal to the max number of iterations specified given that the model does not converge before the max iterations is reached.  For the tuning grid, we tested 1:35 nodes and weight decay regularization values of 0.01, 0.05, 0.1, 0.5, 1, and 2.  Using these parameters, we found a best tune model with 20 nodes and a 0.5 decay.  This resulted in a test set RMSE of 0.119 and an R2 of 0.518.  
 
-```{r message=FALSE, warning=FALSE,eval=FALSE}
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
 # tuning grid
 nnetGrid <- expand.grid(
  size = 1:35,
@@ -650,7 +916,7 @@ knitr::include_graphics("https://raw.githubusercontent.com/MarjeteV/data624/refs
 101   17     1
 </pre>
 
-```{r message=FALSE, warning=FALSE,eval=FALSE}
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
 # Test set predictions & metrics
 nnetPred <- predict(nnetTuned, newdata = x_test)
 postResample(pred = nnetPred, obs = y_test)
@@ -742,7 +1008,7 @@ avNNetTuned_final <- train(
  trControl = trainControl(method = "cv", allowParallel = TRUE),
  linout = TRUE,
  trace = FALSE,
- maxit = 10000,
+ maxit = 1000,
  MaxNWts = 15 * (ncol(x_train) + 1) + 15 + 1)
 
 avNNetPred_final <- predict(avNNetTuned_final, newdata = x_test)
@@ -772,9 +1038,24 @@ avvNNetTuned_final_importance_df %>% ggplot( aes(y = reorder(Variable, +Overall)
 knitr::include_graphics("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/consolidated_report/avnnet_tuned_final_variables.png")
 ```
 
+
+
 ### 6. Model Selection
 
+From the model summary table above, the best performing models were the XGBoost model and the Cross-Validated Random Forest model.  Both models had an R2 of 0.72, and the XGBoost model had an RMSE of 0.89 while the RF model had an RMSE of 0.094.  
+
+Overall, the performance metrics for these two models were very similar, especially when looking at the test set evaluation.  As such, model selection took into account other selection criteria.  The Random Forest model has better interpretability, but XGBoost excels in other areas such as in its generalization - specifically, XGBoost has built in regularization techniques that can prevent overfitting to data.  When looking at the training R2 and RMSE, the RF model had a higher R2 at 0.68 and a lower RMSE at 0.098 compared to an R2 of 0.64 and an RMSE of 0.10 for the XGBoost model.  As such, it does not appear overfitting was an issue for either model given the higher R2 for the out-of-sample data.  
+
+When looking at variable importance, XGBoost model and Random Forest model show similar variables of importance, with 7 of the top 10 variables overlapping.  However, although top variables of importance are very similar, the XGBoost model has a wider distribution of importance. For example, the XGBoost model and the RF model both have Mnf Flow as the top variable of importance.  We can look at this top variable as a way to normalize the variable importance, with the top score as a reference point.  The XGBoost model has 6 variables with an importance score greater than 50% of the maximum score.  In comparison, when looking at the top 10 variables in the Random Forest model, we can see that there is a steep drop off of importance after Mnf Flow. Besides Mnf Flow, the Random Forest model does not have any variables with greater than 50% of the maximum score.  Given that it is not uncommon for some datapoints to be missing in the datasets, having a wider range of important variables could be favorable in case the imputed values are not completely accurate to the true values of the missing datapoints.  
+
+With a greater distribution of variable importance and similar model performance, the XGBoost model was ultimately selected of choice for pH prediction.
+
 ### 7. Conclusion
+
+This project project explored multiple predictive models to address the new regulatory requirement of understanding and predicting PH in the manufacturing process at ABC Beverage. The analysis began with exploratory data analysis to understand variable distributions and relationships, detect outliers, and address missing data. Bagging imputation technique was applied to fill in missing values. Additionally, rows with missing PH values were dropped, and we applied one-hot encoding to the Brand.Code variable to retain its categorical information without introducing imputation risks.
+Several models were tested, covering a range of categories: linear models (PLS, Ridge Regression, LASSO, Elastic Net), non-linear models (SVM, Neural Networks), tree-based models (CART, Random Forest, XGBoost), and rule-based hybrid models (Cubist). Each model’s performance was evaluated based on metrics such as RMSE, R², and MAE, focusing on balancing predictive accuracy and interpretability. Among the models, Cubist, Random Forest, and XGBoost demonstrated a strong ability to capture variability. However, the Cubist model, with R² of 0.69, was not selected to predict PH in the manufacturing process due to its limited interpretability and reliance on complex rules. The Random Forest model, with an R² of 0.68, was also not selected as the best model to predict PH  due to the steep drop off of importance after Mnf Flow in the variable importance results. The dominance of this feature might reduce the influence of different variables in the model.
+We selected the XGBoost model since it shows good generalization, as the test set metrics outperform the training set. The test RMSE (0.0894) is lower than the training RMSE (0.104), and the test R², 0.719) is higher than the training R², (0.643), indicating better variance explanation on unseen data. Additionally, the lower test MAE (0.0664 vs. 0.0755) further confirms its predictive accuracy.  Manufacturing Flow Rate (Mnf.Flow) was the most influential predictor identified by the XGBoost model, followed by Continuous Usage (Usage.cont). Other key predictors include Oxygen in Filler (Oxygen.Filler), Speed of Filler (Filler.Speed), Liquid Temperature (Temperature), Brand Code (Brand.CodeC), Pressure Vacuum, and Carbonation Pressure (Carb.Pressure1), all of which play critical roles in regulating the pH during production.
+Future improvements could focus on adding more predictors, enhancing feature engineering, and increasing the dataset size with additional observations to help us better understand our manufacturing process, predictive factors, and accurately report our model of PH. Exploring other interpretable models or improving current models through advanced tuning and validation techniques could also enhance performance while maintaining transparency.  Accurate pH predictions are essential for meeting regulatory standards, improving quality control, and reducing variability, ensuring ABC Beverage consistently delivers high-quality products.
 
 ### 8. Annotated References
 
