@@ -731,7 +731,7 @@ enet_test_metrics |> kable(caption = "Elastic Net Test Set Evaluation Metrics") 
 
 #### 5.8 Random Forest
 
-The optimal Random Forest model ended up having a slightly disappoint $R^2=0.6639744$ on the training set, however when evaluated on the test set we saw an $R^2=0.7273597$ and a decreased RMSE from 0.1018283 to 0.0891283. This is a particularly encouraging result as one of the dangers of Random Forest models is a propensity to overfit. Better performance on the test set than the training set indicates there is a low likelihood of overfitting and this model will likely generalize well.
+The optimal Random Forest model ended up having a slightly disappoint R2=0.6639744 on the training set, however when evaluated on the test set we saw an R2=0.7273597 and a decreased RMSE from 0.1018283 to 0.0891283. This is a particularly encouraging result as one of the dangers of Random Forest models is a propensity to overfit. Better performance on the test set than the training set indicates there is a low likelihood of overfitting and this model will likely generalize well.
 
 ```{r}
 set.seed(8675309)
@@ -780,7 +780,6 @@ rfMtryV <- rf_cv_model$bestTune[1,"mtry"]
 rf_model_res <- rf_cv_model$results |> filter(mtry == rfMtryV)
 rf_model_res |> kable(caption = "Random Forest Training Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
 ```
-
 
 
 ```{r}
@@ -1081,6 +1080,50 @@ When looking at variable importance, XGBoost model and Random Forest model show 
 The Random Forest model and the XGBoost model exhibited very similar performance metrics and variable importance distributions.  While XGBoost models are less prone to overfitting due to its built in regularization, comparing the in-sample R2 and RMSE to the out-of-sample R2 and RMSE show that neither models are overfitted.  As a result, the Random Forest model was chosen for its better interpretability.  
 
 
+```{r}
+# Retraining selected model on full training set and making final predictions
+set.seed(8675309)
+
+train_control <- trainControl(method = "cv", number = 5)
+# Define the grid for hyperparameters to tune (only mtry here)
+tune_grid <- expand.grid(
+  mtry = 34)  # mtry values to test
+
+
+# Train the Random Forest model using cross-validation for mtry
+rf_final_model <- train(
+  PH ~ .,
+  data = imputed_data,
+  method = "rf",
+  trControl = train_control,
+  tuneGrid = tune_grid,
+  ntree =  1000,  # Number of trees
+  importance = TRUE
+)
+
+test %<>% mutate(across(
+  .cols = c('Filler.Speed', 'Hyd.Pressure4', 'Bowl.Setpoint', 'Carb.Flow'),
+  .fns = as.numeric
+  ))
+
+# Create a one hot encoding tibble
+dummies_final <- dummyVars( ~ Brand.Code, data = test)
+
+one_hot_df_final <- predict(dummies_final, newdata = test) |>
+  as_tibble()
+
+# Add the one hot df to the original and remove the categorical column
+one_hot_df_final <- test |>
+  cbind(one_hot_df_final) |>
+  select(-Brand.Code)
+
+final_pred <- predict(rf_final_model, newdata = one_hot_df_final)
+```
+
+```{r, message=FALSE, warning=FALSE, eval=FALSE}
+names(final_pred) <- "PH"
+write.csv(final_pred, "~/School/data624/final_predictions.csv")
+```
 ### 7. Conclusion
 
 This project project explored multiple predictive models to address the new regulatory requirement of understanding and predicting PH in the manufacturing process at ABC Beverage. The analysis began with exploratory data analysis to understand variable distributions and relationships, detect outliers, and address missing data. Bagging imputation technique was applied to fill in missing values. Additionally, rows with missing PH values were dropped, and we applied one-hot encoding to the Brand.Code variable to retain its categorical information without introducing imputation risks.
