@@ -137,7 +137,7 @@ The variables play a crucial role in capturing and monitoring various aspects of
 ### 3. Exploratory Data Analysis
 
 ```{r}
-beverage_manufacturing_data <- read_xlsx("StudentData.xlsx")
+beverage_manufacturing_data <- read_xlsx("~/School/StudentData.xlsx")
 colnames(beverage_manufacturing_data) <- gsub(" ", "_", colnames(beverage_manufacturing_data))
 
 skim(beverage_manufacturing_data) |> kable() |> kable_styling() |>  kable_classic() 
@@ -172,7 +172,7 @@ beverage_manufacturing_data  |>
 
 ```{r}
 beverage_manufacturing_data_cor <- beverage_manufacturing_data %>% na.omit() %>% select(-Brand_Code) %>% cor()
-corrplot(tl.cex = 0.7,beverage_manufacturing_data_cor)
+corrplot::corrplot(tl.cex = 0.7,beverage_manufacturing_data_cor)
 ```
 
 The dataset provides a detailed snapshot of variables that are predominantly numeric, along with a single character variable, Brand_Code. Most variables exhibit high levels of completeness, with many exceeding 98% complete. For instance, variables like Pressure_Vacuum and Air_Pressurer are fully complete, whereas MFR stands out with a lower completeness rate of 91.8%. The character variable Brand_Code is 95.3% complete, with four unique codes and no empty values. While the dataset overall shows high data quality, variables like MFR and Brand_Code might require imputation or exclusion if they are deemed critical for analysis.
@@ -1155,3 +1155,7 @@ Future improvements could focus on adding more predictors, enhancing feature eng
 4.  **Jochamp. (n.d.).** *Carbonated Beverages Manufacturing Process - A Step by Step Guide.*\
     [Carbonated Beverages Manufacturing Process - A Step by Step Guide](https://jochamp.com/carbonated-beverages-manufacturing-process/)\
     This guide offers a comprehensive overview of the carbonation process in beverage production, including the role of temperature, pressure, and filling speed. It supports our understanding of variables like **Temperature**, **Filler.Speed**, and **Carb Pressure**, helping us interpret their influence on product quality.
+    
+```{r parallel stop, include=FALSE}
+stopCluster(cl)
+```
