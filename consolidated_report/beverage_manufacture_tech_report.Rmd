@@ -170,6 +170,11 @@ beverage_manufacturing_data  |>
   ggtitle("Boxplots of Numerical Predictors")
 ```
 
+```{r}
+beverage_manufacturing_data_cor <- beverage_manufacturing_data %>% na.omit() %>% select(-Brand_Code) %>% cor()
+corrplot(tl.cex = 0.7,beverage_manufacturing_data_cor)
+```
+
 The dataset provides a detailed snapshot of variables that are predominantly numeric, along with a single character variable, Brand_Code. Most variables exhibit high levels of completeness, with many exceeding 98% complete. For instance, variables like Pressure_Vacuum and Air_Pressurer are fully complete, whereas MFR stands out with a lower completeness rate of 91.8%. The character variable Brand_Code is 95.3% complete, with four unique codes and no empty values. While the dataset overall shows high data quality, variables like MFR and Brand_Code might require imputation or exclusion if they are deemed critical for analysis.
 
 The numeric variables in the dataset reveal diverse distributions and variability. Some, such as Carb_Volume, Fill_Ounces, PSC, and Temperature, have tightly clustered values and small standard deviations, indicating consistent measurements. On the other hand, variables like Filler_Speed, MFR, and Carb_Flow show wide ranges and high variability, suggesting potential outliers. Distributions are also varied, with variables like PSC_Fill and Alch_Rel showing skewness, while Filler_Speed exhibits a peaked distribution with clustering near the upper bounds. This variability underscores the need for preprocessing steps such as normalization or transformations to handle skewness and outliers effectively.
@@ -789,7 +794,18 @@ rf_test_metrics <- as.data.frame(t(randomForestPost))
 rf_test_metrics |> kable(caption = "Random Forest Test Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
 ```
 
+```{r}
+rf_final_varImportance <- varImp(rf_cv_model)
+rf_final_importance_df <- data.frame(Variable= rownames(rf_final_varImportance$importance),
+                                Overall=rf_final_varImportance$importance$Overall) 
 
+rf_final_importance_df |> arrange(-Overall) %>% head(10) %>%
+  ggplot( aes(y = reorder(Variable, +Overall), x = Overall)) + geom_bar(stat = "identity") + labs(
+    title = "Variable Importance",
+    x = "Overall Score",
+    y = "Variable"
+  )  + theme_minimal()
+```
 #### 5.9 XGBoost 
 
 XGBoost (Extreme Gradient Boosting) is a robust machine learning algorithm built on gradient boosting techniques, which combine gradient descent for numerical optimization with boosting, an ensemble method that iteratively improves weak learners to create strong models. The term "gradient" reflects the algorithm's use of derivatives from the loss function to optimize predictions. XGBoost operates through three main components: an additive model that sequentially builds improvements, a customizable differentiable loss function to measure prediction errors, and weak learners, typically decision trees, refined iteratively by addressing their shortcomings.XGBoost enhances flexibility and predictive performance by framing boosting as a numerical optimization problem, making it a favored tool in machine learning.
@@ -857,6 +873,18 @@ xgBoos_test_metrics <- as.data.frame(t(xgBoostPostS))
 xgBoos_test_metrics |> kable(caption = "XGBoost Test Set Evaluation Metrics") |> kable_styling() |>  kable_classic()
 ```
 
+```{r}
+xgBoost_varImportance <- varImp(xgb_model)
+xgBoost_importance_df <- data.frame(Variable= rownames(xgBoost_varImportance$importance),
+                                Overall=xgBoost_varImportance$importance$Overall) 
+
+xgBoost_importance_df |> arrange(-Overall) %>% head(10) %>%
+  ggplot( aes(y = reorder(Variable, +Overall), x = Overall)) + geom_bar(stat = "identity") + labs(
+    title = "Variable Importance",
+    x = "Overall Score",
+    y = "Variable"
+  )  + theme_minimal()
+```
 #### 5.9 Neural Networks
 
 The concept of Neural Networks is a node-layer system trained on an existing dataset. An artificial neural network (ANN) model contains an input layer, hidden layers, and an output layer, with each of these layers containing nodes.  At the input layer, each node contains a dimension of the dataset. At the outer layer, each node represents the final output or prediction.  The hidden layers are the core of the model, where the computation and learning take place.  Each node of a neural network in a hidden layer takes in a set of the input, performs a computation based on the activation function, and then creates an output.  These outputs are assigned weights which determine its level of consideration in the final output and are adjusted throughout the training process.  The model is trained over many cycles, called epochs.  At the end of each batch, a loss function is evaluated based on the model’s performance. Batches are subsets of the training dataset, and in the case of the nnet package in R, batch size is equal to the size of the dataset as a whole.  With supervised learning, the dataset will have various input parameters as well as a known output.  The loss function compares the model output with the known output.  Weights for each node are adjusted based on this loss function, and the model is said to converge when the loss function no longer decreases.  
@@ -882,9 +910,9 @@ x_test <- testData[, names(testData) != "PH"]
 y_test <- testData$PH
 ```
 
-Data was preprocessed with centering and scaling, and a linear activation function was used.  The model utilized cross validation, and 500 maximum iterations were specified in the tuning phase.  Since the nnet package defaults to a batch size equal to the training set size, the number of epochs is equal to the max number of iterations specified given that the model does not converge before the max iterations is reached.  For the tuning grid, we tested 1:35 nodes and weight decay regularization values of 0.01, 0.05, 0.1, 0.5, 1, and 2.  Using these parameters, we found a best tune model with 20 nodes and a 0.5 decay.  This resulted in a test set RMSE of 0.119 and an R2 of 0.518.  
+Data was preprocessed with centering and scaling, and a linear activation function was used.  The model utilized cross validation, and 500 maximum iterations were specified in the tuning phase.  Since the nnet package defaults to a batch size equal to the training set size, the number of epochs is equal to the max number of iterations specified given that the model does not converge before the max iterations is reached.  For the tuning grid, we tested 1:35 nodes and weight decay regularization values of 0.01, 0.05, 0.1, 0.5, 1, and 2.  Using these parameters, we found a best tune model with 17 nodes and a decay value of 1.  This resulted in a test set RMSE of 0.113 and an R2 of 0.555.  
 
-```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+```{r eval=FALSE, message=FALSE, warning=FALSE, eval=FALSE}
 # tuning grid
 nnetGrid <- expand.grid(
  size = 1:35,
@@ -1048,9 +1076,10 @@ From the model summary table above, the best performing models were the XGBoost 
 
 Overall, the performance metrics for these two models were very similar, especially when looking at the test set evaluation.  As such, model selection took into account other selection criteria.  The Random Forest model has better interpretability, but XGBoost excels in other areas such as in its generalization - specifically, XGBoost has built in regularization techniques that can prevent overfitting to data.  When looking at the training R2 and RMSE, the RF model had a higher R2 at 0.66 and a lower RMSE at 0.10 compared to an R2 of 0.64 and an RMSE of 0.10 for the XGBoost model.  As such, it does not appear overfitting was an issue for either model given the higher R2 for the out-of-sample data.  
 
-When looking at variable importance, XGBoost model and Random Forest model show similar variables of importance, with 7 of the top 10 variables overlapping.  However, although top variables of importance are very similar, the XGBoost model has a wider distribution of importance. For example, the XGBoost model and the RF model both have Mnf Flow as the top variable of importance.  We can look at this top variable as a way to normalize the variable importance, with the top score as a reference point.  The XGBoost model has 6 variables with an importance score greater than 50% of the maximum score.  In comparison, when looking at the top 10 variables in the Random Forest model, we can see that there is a steep drop off of importance after Mnf Flow. Besides Mnf Flow, the Random Forest model does not have any variables with greater than 50% of the maximum score.  Given that it is not uncommon for some datapoints to be missing in the datasets, having a wider range of important variables could be favorable in case the imputed values are not completely accurate to the true values of the missing datapoints.  
+When looking at variable importance, XGBoost model and Random Forest model show similar variables of importance, with 6 of the top 10 variables overlapping.  Both models also appear to have a similar distribution of importance among its top ten variables.  The importance of the Mnf Flow variable is greatest for both models, having an overall score of 100.  After the top variable, both models have a steep drop off in importance score for the remaining top variables.  
 
-With a greater distribution of variable importance and similar model performance, the XGBoost model was ultimately selected of choice for pH prediction.
+The Random Forest model and the XGBoost model exhibited very similar performance metrics and variable importance distributions.  While XGBoost models are less prone to overfitting due to its built in regularization, comparing the in-sample R2 and RMSE to the out-of-sample R2 and RMSE show that neither models are overfitted.  As a result, the Random Forest model was chosen for its better interpretability.  
+
 
 ### 7. Conclusion
 
