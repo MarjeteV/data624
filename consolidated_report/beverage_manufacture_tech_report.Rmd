@@ -3,15 +3,16 @@ title: "Final Project"
 author: "Matthew Tillmawitz, Heleine Fouda, Marjete Vucinaj, Lewris Mota, Kim Koon "
 date: "2024-12-15"
 output:
+  pdf_document:
+    toc: true
+    latex_engine: xelatex
+  word_document:
+    toc: true
   html_document:
     code_folding: hide
     toc: true
     toc_float: true
     always_allow_html: true
-  word_document:
-    toc: true
-  pdf_document:
-    toc: true
 ---
 
 ```{r message=FALSE, warning=FALSE, include=FALSE}
@@ -939,7 +940,7 @@ nnetTuned$bestTune
 ```
 
 ```{r echo=FALSE, out.width = '100%'}
-knitr::include_graphics("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/consolidated_report/nnet_tuned_plot.png")
+knitr::include_graphics("~/School/data624/consolidated_report/nnet_tuned_plot.png")
 ```
 <pre>
     size decay
@@ -974,7 +975,7 @@ nnetTuned_final_importance_df |> ggplot( aes(y = reorder(Variable, +Overall), x 
 ```
 
 ```{r echo=FALSE,  out.width = '100%'}
-knitr::include_graphics("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/consolidated_report/nnet_tuned_variables.png")
+knitr::include_graphics("~/School/data624/consolidated_report/nnet_tuned_variables.png")
 ```
 In addition to exploring various regularization values, an ensemble neural network method, average neural net (avnnet), was also tuned to account for the highly correlated variables.  For the tuning grid, we again tested 1:35 nodes and weight decay regularization values of 0.01, 0.05, 0.1, 0.5, 1, and 2.  We also specified both bootstrapped aggregation and no bootstrapped aggregation in the tuning grid.  The best tuned model had 15 nodes and 0.01 decay, with no bootstrapped aggregation.  
 
@@ -1004,7 +1005,7 @@ plot(avNNetTuned)
 ```
 
 ```{r echo=FALSE, out.width = '100%'}
-knitr::include_graphics("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/consolidated_report/avnnet_tuned_plot.png")
+knitr::include_graphics("~/School/data624/consolidated_report/avnnet_tuned_plot.png")
 ```
 <pre>
     size decay   bag
@@ -1065,7 +1066,7 @@ avvNNetTuned_final_importance_df %>% ggplot( aes(y = reorder(Variable, +Overall)
   )  + theme_minimal()
 ```
 ```{r echo=FALSE, out.width = '100%'}
-knitr::include_graphics("https://raw.githubusercontent.com/MarjeteV/data624/refs/heads/main/consolidated_report/avnnet_tuned_final_variables.png")
+knitr::include_graphics("~/School/data624/consolidated_report/avnnet_tuned_final_variables.png")
 ```
 
 
